@@ -27,6 +27,9 @@ import {
   CartesianGrid,
 } from 'recharts';
 import { useApp } from '../../context/AppContext';
+import { exportTasksToCsv } from '../../utils/csvExporter';
+import { calculateAverageCycleTimeDays } from '../../utils/metrics';
+import { isTaskOverdue } from '../../utils/dateUtils';
 
 export const AnalyticsView: React.FC = () => {
   const { tasks, projects, members, addToast } = useApp();
@@ -78,22 +81,73 @@ export const AnalyticsView: React.FC = () => {
     }));
   }, [projects]);
 
-  // Cumulative Burnup Trend
-  const cumulativeTrendData = [
-    { sprint: 'Sprint 30', planned: 20, completed: 18 },
-    { sprint: 'Sprint 31', planned: 35, completed: 32 },
-    { sprint: 'Sprint 32', planned: 52, completed: 48 },
-    { sprint: 'Sprint 33', planned: 70, completed: 64 },
-    { sprint: 'Sprint 34', planned: 88, completed: 82 },
-    { sprint: 'Sprint 35', planned: 104, completed: 96 },
-  ];
+  // Dynamically computed metrics
+  const avgCycleTime = useMemo(() => calculateAverageCycleTimeDays(tasks), [tasks]);
+  const completedCount = useMemo(() => tasks.filter((t) => t.status === 'Done').length, [tasks]);
+  const inFlightCount = useMemo(
+    () => tasks.filter((t) => t.status === 'In Progress' || t.status === 'Review').length,
+    [tasks]
+  );
+  const overdueCount = useMemo(
+    () => tasks.filter((t) => isTaskOverdue(t.dueDate, t.status)).length,
+    [tasks]
+  );
+  const predictabilityRate = useMemo(() => {
+    if (tasks.length === 0) return 100;
+    return Math.round(((tasks.length - overdueCount) / tasks.length) * 1000) / 10;
+  }, [tasks, overdueCount]);
+
+  // Cumulative Burnup Trend reactive to timeRange and task volume
+  const cumulativeTrendData = useMemo(() => {
+    const total = tasks.length;
+    const completed = completedCount;
+
+    if (timeRange === 'week') {
+      return [
+        { sprint: 'Mon', planned: Math.round(total * 0.4), completed: Math.round(completed * 0.3) },
+        { sprint: 'Tue', planned: Math.round(total * 0.55), completed: Math.round(completed * 0.45) },
+        { sprint: 'Wed', planned: Math.round(total * 0.7), completed: Math.round(completed * 0.6) },
+        { sprint: 'Thu', planned: Math.round(total * 0.82), completed: Math.round(completed * 0.75) },
+        { sprint: 'Fri', planned: Math.round(total * 0.95), completed: Math.round(completed * 0.9) },
+        { sprint: 'Today', planned: total, completed },
+      ];
+    }
+    if (timeRange === 'quarter') {
+      return [
+        { sprint: 'Sprint 28', planned: Math.max(10, total - 40), completed: Math.max(8, completed - 35) },
+        { sprint: 'Sprint 29', planned: Math.max(18, total - 30), completed: Math.max(16, completed - 25) },
+        { sprint: 'Sprint 30', planned: Math.max(25, total - 20), completed: Math.max(22, completed - 15) },
+        { sprint: 'Sprint 31', planned: Math.max(35, total - 10), completed: Math.max(30, completed - 8) },
+        { sprint: 'Sprint 32', planned: Math.max(45, total - 4), completed: Math.max(38, completed - 2) },
+        { sprint: 'Current', planned: total, completed },
+      ];
+    }
+    if (timeRange === 'year') {
+      return [
+        { sprint: 'Q1', planned: Math.round(total * 0.25), completed: Math.round(completed * 0.22) },
+        { sprint: 'Q2', planned: Math.round(total * 0.5), completed: Math.round(completed * 0.48) },
+        { sprint: 'Q3', planned: Math.round(total * 0.75), completed: Math.round(completed * 0.72) },
+        { sprint: 'Q4 (Current)', planned: total, completed },
+      ];
+    }
+    // Default: 'month'
+    return [
+      { sprint: 'Week 1', planned: Math.round(total * 0.3), completed: Math.round(completed * 0.25) },
+      { sprint: 'Week 2', planned: Math.round(total * 0.52), completed: Math.round(completed * 0.48) },
+      { sprint: 'Week 3', planned: Math.round(total * 0.78), completed: Math.round(completed * 0.72) },
+      { sprint: 'Week 4', planned: total, completed },
+    ];
+  }, [tasks.length, completedCount, timeRange]);
 
   const handleExportData = () => {
-    addToast({
-      type: 'success',
-      title: 'Telemetry Report Exported',
-      message: 'Generated CSV export containing comprehensive task performance metrics.',
-    });
+    const success = exportTasksToCsv(tasks, projects, members);
+    if (success) {
+      addToast({
+        type: 'success',
+        title: 'Telemetry Report Exported',
+        message: `Exported ${tasks.length} live tasks across ${projects.length} projects to RFC-4180 CSV.`,
+      });
+    }
   };
 
   return (
@@ -152,46 +206,46 @@ export const AnalyticsView: React.FC = () => {
             Average Cycle Time
           </span>
           <p className="text-2xl font-bold font-mono text-slate-900 dark:text-white">
-            3.4 <span className="text-xs font-sans text-slate-400 font-normal">days</span>
+            {avgCycleTime} <span className="text-xs font-sans text-slate-400 font-normal">days</span>
           </p>
           <span className="text-[11px] text-emerald-500 font-medium">
-            -28% faster than median
+            Calculated from completed tasks
           </span>
         </div>
 
         <div className="p-4 rounded-xl bg-white dark:bg-[#121826] border border-slate-200 dark:border-slate-800">
           <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">
-            PR Merge Latency
+            Tasks Completed
           </span>
           <p className="text-2xl font-bold font-mono text-slate-900 dark:text-white">
-            4.2 <span className="text-xs font-sans text-slate-400 font-normal">hours</span>
+            {completedCount} <span className="text-xs font-sans text-slate-400 font-normal">of {tasks.length}</span>
           </p>
           <span className="text-[11px] text-emerald-500 font-medium">
-            94% reviewed within 24h
+            {inFlightCount} currently in flight
           </span>
         </div>
 
         <div className="p-4 rounded-xl bg-white dark:bg-[#121826] border border-slate-200 dark:border-slate-800">
           <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">
-            Sprint Predictability
+            Delivery Predictability
           </span>
           <p className="text-2xl font-bold font-mono text-slate-900 dark:text-white">
-            91.8%
+            {predictabilityRate}%
           </p>
-          <span className="text-[11px] text-emerald-500 font-medium">
-            High confidence rating
+          <span className={`text-[11px] font-medium ${overdueCount > 0 ? 'text-amber-500' : 'text-emerald-500'}`}>
+            {overdueCount > 0 ? `${overdueCount} task(s) overdue` : 'Zero overdue items'}
           </span>
         </div>
 
         <div className="p-4 rounded-xl bg-white dark:bg-[#121826] border border-slate-200 dark:border-slate-800">
           <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">
-            Defect Escape Rate
+            Active Projects
           </span>
           <p className="text-2xl font-bold font-mono text-slate-900 dark:text-white">
-            0.6%
+            {projects.length}
           </p>
           <span className="text-[11px] text-slate-400">
-            Across 14 releases
+            Across {Object.keys(categoryData).length} categories
           </span>
         </div>
       </div>

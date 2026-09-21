@@ -18,6 +18,7 @@ import {
 import { useApp } from '../../context/AppContext';
 import { Avatar } from '../common/Avatar';
 import { ThemeMode, DensityMode } from '../../types';
+import { ConfirmationModal } from '../common/ConfirmationModal';
 
 export const SettingsView: React.FC = () => {
   const {
@@ -31,6 +32,7 @@ export const SettingsView: React.FC = () => {
   } = useApp();
 
   const [activeTab, setActiveTab] = useState<'appearance' | 'profile' | 'workspace' | 'notifications' | 'integrations'>('appearance');
+  const [isResetModalOpen, setIsResetModalOpen] = useState(false);
 
   // Profile Form state
   const [name, setName] = useState('Alex Rivera');
@@ -91,11 +93,7 @@ export const SettingsView: React.FC = () => {
         {/* Reset Demo Data Button */}
         <button
           type="button"
-          onClick={() => {
-            if (window.confirm('Reset all demo data (projects, tasks, automations) back to original state?')) {
-              resetDemoData();
-            }
-          }}
+          onClick={() => setIsResetModalOpen(true)}
           className="flex items-center gap-1.5 px-3.5 py-1.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 border border-rose-500/30 rounded-lg text-xs font-semibold shadow-xs transition-colors"
         >
           <RotateCcw className="w-3.5 h-3.5" />
@@ -389,6 +387,17 @@ export const SettingsView: React.FC = () => {
           )}
         </div>
       </div>
+
+      <ConfirmationModal
+        isOpen={isResetModalOpen}
+        onClose={() => setIsResetModalOpen(false)}
+        onConfirm={resetDemoData}
+        title="Reset All Workspace Demo Data?"
+        description="This will erase all custom projects, tasks, invitations, and local edits, returning the system back to the clean reference state. Unsaved modifications will be discarded."
+        confirmLabel="Reset Workspace Data"
+        variant="danger"
+        icon="reset"
+      />
     </div>
   );
 };

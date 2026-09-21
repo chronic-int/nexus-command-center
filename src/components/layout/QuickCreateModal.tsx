@@ -12,6 +12,7 @@ import {
 import { useApp } from '../../context/AppContext';
 import { Modal } from '../common/Modal';
 import { TaskPriority, TaskStatus } from '../../types';
+import { getTodayString } from '../../utils/dateUtils';
 
 export const QuickCreateModal: React.FC = () => {
   const {
@@ -23,6 +24,7 @@ export const QuickCreateModal: React.FC = () => {
     createTask,
     createProject,
     createDocument,
+    createInvitation,
     addToast,
     setSelectedTaskId,
   } = useApp();
@@ -40,7 +42,13 @@ export const QuickCreateModal: React.FC = () => {
   const [taskAssigneeId, setTaskAssigneeId] = useState(members[0]?.id || 'user-1');
   const [taskPriority, setTaskPriority] = useState<TaskPriority>('Medium');
   const [taskStatus, setTaskStatus] = useState<TaskStatus>('Todo');
-  const [taskDueDate, setTaskDueDate] = useState('2026-10-05');
+  const [taskDueDate, setTaskDueDate] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 14);
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${d.getFullYear()}-${m}-${day}`;
+  });
   const [taskLabels, setTaskLabels] = useState('Frontend, Core');
 
   // Project Form State
@@ -48,7 +56,13 @@ export const QuickCreateModal: React.FC = () => {
   const [projectKey, setProjectKey] = useState('');
   const [projectDesc, setProjectDesc] = useState('');
   const [projectCategory, setProjectCategory] = useState('Core Infrastructure');
-  const [projectDeadline, setProjectDeadline] = useState('2026-11-15');
+  const [projectDeadline, setProjectDeadline] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 60);
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${d.getFullYear()}-${m}-${day}`;
+  });
   const [projectColor, setProjectColor] = useState('#6366f1');
 
   // Document Form State
@@ -139,10 +153,11 @@ export const QuickCreateModal: React.FC = () => {
     e.preventDefault();
     if (!inviteEmail.trim()) return;
 
-    addToast({
-      type: 'success',
-      title: 'Invitation Sent',
-      message: `Invited ${inviteName || inviteEmail} (${inviteRole}) to the workspace.`,
+    createInvitation({
+      email: inviteEmail.trim(),
+      name: inviteName.trim() || inviteEmail.trim().split('@')[0],
+      role: inviteRole.trim() || 'Software Engineer',
+      department: inviteDepartment || 'Engineering',
     });
 
     setInviteEmail('');

@@ -14,10 +14,14 @@ import {
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { Modal } from '../common/Modal';
+import { evaluateRuleDryRun } from '../../utils/automationEngine';
+import { AutomationRule } from '../../types';
 
 export const AutomationsView: React.FC = () => {
   const {
     automations,
+    tasks,
+    projects,
     toggleAutomationRule,
     createAutomationRule,
     deleteAutomationRule,
@@ -73,12 +77,25 @@ export const AutomationsView: React.FC = () => {
     setIsCreateModalOpen(false);
   };
 
-  const handleTestRun = (ruleName: string) => {
-    addToast({
-      type: 'success',
-      title: 'Rule Executed (Dry Run)',
-      message: `Simulated "${ruleName}" against current workspace state. 2 tasks matched.`,
-    });
+  const handleTestRun = (rule: AutomationRule) => {
+    const matched = evaluateRuleDryRun(rule, tasks, projects);
+    if (matched.length > 0) {
+      const keys = matched.map((t) => t.key).slice(0, 3).join(', ');
+      const extra = matched.length > 3 ? ` and ${matched.length - 3} more` : '';
+      addToast({
+        type: 'success',
+        title: `Dry Run: ${rule.name}`,
+        message: `Condition verified against current state: ${matched.length} task(s) matched (${keys}${extra}).`,
+        duration: 4500,
+      });
+    } else {
+      addToast({
+        type: 'info',
+        title: `Dry Run: ${rule.name}`,
+        message: `Evaluation completed. 0 active tasks currently satisfy the rule condition "${rule.condition}".`,
+        duration: 4500,
+      });
+    }
   };
 
   return (
@@ -195,7 +212,7 @@ export const AutomationsView: React.FC = () => {
             <div className="flex items-center justify-between mt-4 pt-3 border-t border-slate-100 dark:border-slate-800/80 text-xs">
               <button
                 type="button"
-                onClick={() => handleTestRun(rule.name)}
+                onClick={() => handleTestRun(rule)}
                 className="flex items-center gap-1 text-[11px] font-medium text-brand-600 dark:text-brand-400 hover:underline"
               >
                 <Play className="w-3 h-3" />

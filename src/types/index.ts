@@ -30,14 +30,14 @@ export interface Attachment {
 
 export interface Task {
   id: string;
-  key: string; // e.g. "NEX-104"
+  key: string; // e.g. "AUR-104"
   title: string;
   description: string;
   status: TaskStatus;
   priority: TaskPriority;
   projectId: string;
   assigneeId: string;
-  dueDate: string; // ISO date string YYYY-MM-DD
+  dueDate: string; // YYYY-MM-DD
   startDate?: string;
   estimatedHours?: number;
   labels: string[];
@@ -56,8 +56,8 @@ export interface Project {
   category: string;
   health: ProjectHealth;
   progress: number; // 0 to 100
-  deadline: string;
-  startDate: string;
+  deadline: string; // YYYY-MM-DD
+  startDate: string; // YYYY-MM-DD
   leadId: string;
   memberIds: string[];
   color: string;
@@ -75,6 +75,16 @@ export interface TeamMember {
   availability: MemberAvailability;
   currentProjectId: string;
   bio?: string;
+}
+
+export interface PendingInvitation {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  department: string;
+  invitedAt: string;
+  status: 'Pending' | 'Accepted' | 'Cancelled';
 }
 
 export interface Document {
@@ -100,14 +110,39 @@ export interface Notification {
   targetId?: string;
 }
 
+export type AutomationTrigger =
+  | 'Task deadline expires'
+  | 'Task status changes to Done'
+  | 'Task priority set to Urgent'
+  | 'New task created without assignee'
+  | 'Task moved to Review column'
+  | 'Task created';
+
+export type AutomationCondition =
+  | 'Status != Done'
+  | 'Assignee is unassigned'
+  | 'Priority == Urgent'
+  | 'Label includes DevOps or Infrastructure'
+  | 'Urgent count > 3'
+  | 'All subtasks completed'
+  | 'Always';
+
+export type AutomationAction =
+  | 'Set Priority = Urgent & Send Notification'
+  | 'Update Project Health = At Risk'
+  | 'Assign task to Alex Rivera'
+  | 'Archive completed subtasks to audit history'
+  | 'Create assignment notification for Elena'
+  | 'Record audit log';
+
 export interface AutomationRule {
   id: string;
   name: string;
   description: string;
   enabled: boolean;
-  trigger: string;
-  condition: string;
-  action: string;
+  trigger: AutomationTrigger | string;
+  condition: AutomationCondition | string;
+  action: AutomationAction | string;
   lastTriggered?: string;
 }
 

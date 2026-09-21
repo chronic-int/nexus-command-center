@@ -14,6 +14,7 @@ import {
   ExternalLink,
   ChevronRight,
   TrendingUp,
+  Trash2,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { ViewTab } from '../../types';
@@ -22,6 +23,7 @@ import { Avatar, AvatarGroup } from '../common/Avatar';
 import { KanbanBoard } from './KanbanBoard';
 import { TaskListView } from './TaskListView';
 import { TimelineGanttView } from './TimelineGanttView';
+import { ConfirmationModal } from '../common/ConfirmationModal';
 
 export const ProjectWorkspace: React.FC = () => {
   const {
@@ -38,7 +40,10 @@ export const ProjectWorkspace: React.FC = () => {
     setSelectedTaskId,
     setSelectedDocId,
     setActiveView,
+    deleteProject,
   } = useApp();
+
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
 
   // Find active project or fallback to first project
   const project = projects.find((p) => p.id === activeProjectId) || projects[0];
@@ -145,6 +150,16 @@ export const ProjectWorkspace: React.FC = () => {
             >
               <Plus className="w-3.5 h-3.5" />
               <span>Add Task</span>
+            </button>
+
+            {/* Delete Project Action */}
+            <button
+              type="button"
+              onClick={() => setIsDeleteModalOpen(true)}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-colors"
+              title="Delete project"
+            >
+              <Trash2 className="w-4 h-4" />
             </button>
           </div>
         </div>
@@ -349,6 +364,20 @@ export const ProjectWorkspace: React.FC = () => {
           </div>
         )}
       </div>
+
+      <ConfirmationModal
+        isOpen={isDeleteModalOpen}
+        onClose={() => setIsDeleteModalOpen(false)}
+        onConfirm={() => {
+          deleteProject(project.id);
+          setActiveView('projects');
+        }}
+        title={`Delete "${project.name}"?`}
+        description={`This action will permanently delete this project along with its ${projectTasks.length} associated task(s), ${projectDocs.length} documentation file(s), and related activity audit logs. This cannot be undone.`}
+        confirmLabel="Delete Project & Records"
+        variant="danger"
+        icon="trash"
+      />
     </div>
   );
 };

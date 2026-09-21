@@ -16,6 +16,7 @@ import {
 import { useApp } from '../../context/AppContext';
 import { Document } from '../../types';
 import { Avatar } from '../common/Avatar';
+import { renderSafeMarkdown } from '../../utils/markdown';
 
 export const DocumentsView: React.FC = () => {
   const {
@@ -243,12 +244,7 @@ export const DocumentsView: React.FC = () => {
                   <div
                     className="space-y-3 font-sans text-slate-800 dark:text-slate-200 leading-relaxed whitespace-pre-wrap"
                     dangerouslySetInnerHTML={{
-                      __html: activeDoc.content
-                        .replace(/^# (.*$)/gim, '<h1 class="text-xl font-bold mt-4 mb-2">$1</h1>')
-                        .replace(/^## (.*$)/gim, '<h2 class="text-base font-bold mt-3 mb-1.5 text-brand-500">$1</h2>')
-                        .replace(/^### (.*$)/gim, '<h3 class="text-sm font-semibold mt-2 mb-1">$1</h3>')
-                        .replace(/\*\*(.*?)\*\*/gim, '<strong>$1</strong>')
-                        .replace(/`(.*?)`/gim, '<code class="px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-800 font-mono text-[11px]">$1</code>')
+                      __html: renderSafeMarkdown(activeDoc.content)
                     }}
                   />
                 </div>

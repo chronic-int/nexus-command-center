@@ -3,6 +3,7 @@ import { Clock, Calendar as CalendarIcon, ChevronLeft, ChevronRight } from 'luci
 import { Task } from '../../types';
 import { useApp } from '../../context/AppContext';
 import { Avatar } from '../common/Avatar';
+import { getTodayString, isTodayDate, parseLocalDate } from '../../utils/dateUtils';
 
 interface TimelineGanttViewProps {
   tasks: Task[];
@@ -11,29 +12,38 @@ interface TimelineGanttViewProps {
 export const TimelineGanttView: React.FC<TimelineGanttViewProps> = ({ tasks }) => {
   const { setSelectedTaskId, members } = useApp();
 
-  // Reference base date for timeline window (September 15 to October 15, 2026 - 31 days)
+  // Reference base date for timeline window (anchored to 7 days prior to today, spanning 30 days)
+  const timelineStartObj = useMemo(() => {
+    const today = parseLocalDate(getTodayString());
+    const base = new Date(today);
+    base.setDate(today.getDate() - 7);
+    return base;
+  }, []);
+
   const timelineDates = useMemo(() => {
     const dates: { dateStr: string; dayNum: number; dayName: string; isToday: boolean }[] = [];
-    const base = new Date('2026-09-15');
-    const todayStr = '2026-09-22';
+    const base = new Date(timelineStartObj);
 
     for (let i = 0; i < 30; i++) {
       const d = new Date(base);
       d.setDate(base.getDate() + i);
-      const dateStr = d.toISOString().split('T')[0];
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      const dateStr = `${year}-${month}-${day}`;
       const dayNum = d.getDate();
       const dayName = d.toLocaleDateString('en-US', { weekday: 'narrow' });
       dates.push({
         dateStr,
         dayNum,
         dayName,
-        isToday: dateStr === todayStr,
+        isToday: isTodayDate(dateStr),
       });
     }
     return dates;
-  }, []);
+  }, [timelineStartObj]);
 
-  const timelineStart = new Date('2026-09-15').getTime();
+  const timelineStart = timelineStartObj.getTime();
   const oneDayMs = 86400000;
 
   const getTaskBarSpan = (task: Task) => {

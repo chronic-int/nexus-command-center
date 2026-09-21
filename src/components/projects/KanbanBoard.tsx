@@ -15,6 +15,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ tasks, projectId }) =>
   const [activeDropColumn, setActiveDropColumn] = useState<TaskStatus | null>(null);
   const [quickAddColumn, setQuickAddColumn] = useState<TaskStatus | null>(null);
   const [quickAddTitle, setQuickAddTitle] = useState('');
+  const [mobileActiveColumn, setMobileActiveColumn] = useState<TaskStatus | 'ALL'>('ALL');
 
   const columns: { id: TaskStatus; title: string; color: string }[] = [
     { id: 'Backlog', title: 'Backlog', color: 'border-slate-400' },
@@ -23,6 +24,10 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ tasks, projectId }) =>
     { id: 'Review', title: 'Review', color: 'border-amber-500' },
     { id: 'Done', title: 'Done', color: 'border-emerald-500' },
   ];
+
+  const visibleColumns = columns.filter(
+    (col) => mobileActiveColumn === 'ALL' || col.id === mobileActiveColumn
+  );
 
   const handleDragStart = (e: React.DragEvent, task: Task) => {
     e.dataTransfer.setData('text/plain', task.id);
@@ -72,9 +77,46 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ tasks, projectId }) =>
   };
 
   return (
-    <div className="flex-1 overflow-x-auto pb-4 scrollbar-thin">
-      <div className="flex gap-4 min-w-[1100px] h-full items-start px-1">
+    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+      {/* Mobile Column Switcher */}
+      <div className="md:hidden flex items-center gap-1.5 overflow-x-auto pb-2 mb-2 scrollbar-none shrink-0">
+        <button
+          type="button"
+          onClick={() => setMobileActiveColumn('ALL')}
+          className={`px-3 py-1 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors ${
+            mobileActiveColumn === 'ALL'
+              ? 'bg-brand-600 text-white shadow-xs'
+              : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700'
+          }`}
+        >
+          All Columns ({tasks.length})
+        </button>
         {columns.map((col) => {
+          const count = tasks.filter((t) => t.status === col.id).length;
+          return (
+            <button
+              key={col.id}
+              type="button"
+              onClick={() => setMobileActiveColumn(col.id)}
+              className={`px-3 py-1 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors ${
+                mobileActiveColumn === col.id
+                  ? 'bg-brand-600 text-white shadow-xs'
+                  : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700'
+              }`}
+            >
+              {col.title} ({count})
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="flex-1 overflow-x-auto pb-4 scrollbar-thin">
+        <div
+          className={`flex gap-4 ${
+            mobileActiveColumn === 'ALL' ? 'min-w-[1100px]' : 'min-w-full'
+          } h-full items-start px-1`}
+        >
+          {visibleColumns.map((col) => {
           const colTasks = tasks.filter((t) => t.status === col.id);
           const isDropActive = activeDropColumn === col.id;
 
@@ -173,5 +215,6 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ tasks, projectId }) =>
         })}
       </div>
     </div>
-  );
+  </div>
+);
 };

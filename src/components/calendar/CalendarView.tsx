@@ -9,6 +9,7 @@ import {
 import { useApp } from '../../context/AppContext';
 import { Task } from '../../types';
 import { PriorityBadge } from '../common/Badge';
+import { isTodayDate } from '../../utils/dateUtils';
 
 export const CalendarView: React.FC = () => {
   const {
@@ -19,7 +20,7 @@ export const CalendarView: React.FC = () => {
     setQuickCreateDefaultTab,
   } = useApp();
 
-  const [currentDate, setCurrentDate] = useState(new Date('2026-09-22'));
+  const [currentDate, setCurrentDate] = useState(new Date());
   const [calendarMode, setCalendarMode] = useState<'month' | 'week'>('month');
 
   const year = currentDate.getFullYear();
@@ -47,7 +48,7 @@ export const CalendarView: React.FC = () => {
   };
 
   const jumpToToday = () => {
-    setCurrentDate(new Date('2026-09-22'));
+    setCurrentDate(new Date());
   };
 
   // Month days generation
@@ -73,7 +74,7 @@ export const CalendarView: React.FC = () => {
         dateStr,
         dayNumber: d,
         isCurrentMonth: false,
-        isToday: dateStr === '2026-09-22',
+        isToday: isTodayDate(dateStr),
       });
     }
 
@@ -84,7 +85,7 @@ export const CalendarView: React.FC = () => {
         dateStr,
         dayNumber: d,
         isCurrentMonth: true,
-        isToday: dateStr === '2026-09-22',
+        isToday: isTodayDate(dateStr),
       });
     }
 
@@ -98,7 +99,7 @@ export const CalendarView: React.FC = () => {
         dateStr,
         dayNumber: d,
         isCurrentMonth: false,
-        isToday: dateStr === '2026-09-22',
+        isToday: isTodayDate(dateStr),
       });
     }
 
@@ -131,7 +132,7 @@ export const CalendarView: React.FC = () => {
         dateStr,
         dayNumber: d.getDate(),
         dayName: d.toLocaleDateString('en-US', { weekday: 'short' }),
-        isToday: dateStr === '2026-09-22',
+        isToday: isTodayDate(dateStr),
       });
     }
     return days;

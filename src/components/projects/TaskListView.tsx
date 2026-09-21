@@ -16,6 +16,7 @@ import { Task, TaskPriority, TaskStatus } from '../../types';
 import { useApp } from '../../context/AppContext';
 import { PriorityBadge, StatusBadge } from '../common/Badge';
 import { Avatar } from '../common/Avatar';
+import { isTaskOverdue } from '../../utils/dateUtils';
 
 interface TaskListViewProps {
   tasks: Task[];
@@ -223,7 +224,7 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ tasks, showProjectCo
                 const isSelected = selectedTaskIds.includes(t.id);
                 const project = projects.find((p) => p.id === t.projectId);
                 const assignee = members.find((m) => m.id === t.assigneeId);
-                const isOverdue = t.status !== 'Done' && new Date(t.dueDate) < new Date('2026-09-22');
+                const isOverdue = isTaskOverdue(t.dueDate, t.status);
 
                 return (
                   <tr

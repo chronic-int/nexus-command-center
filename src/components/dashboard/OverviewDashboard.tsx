@@ -27,6 +27,7 @@ import {
 import { useApp } from '../../context/AppContext';
 import { HealthBadge } from '../common/Badge';
 import { Avatar, AvatarGroup } from '../common/Avatar';
+import { isTaskOverdue } from '../../utils/dateUtils';
 
 export const OverviewDashboard: React.FC = () => {
   const {
@@ -49,10 +50,7 @@ export const OverviewDashboard: React.FC = () => {
   // Compute live metrics
   const activeProjectsCount = projects.length;
   const completedTasksCount = tasks.filter((t) => t.status === 'Done').length;
-  const overdueTasks = tasks.filter((t) => {
-    if (t.status === 'Done') return false;
-    return new Date(t.dueDate) < new Date('2026-09-22');
-  });
+  const overdueTasks = tasks.filter((t) => isTaskOverdue(t.dueDate, t.status));
   const urgentTasksCount = tasks.filter((t) => t.priority === 'Urgent' && t.status !== 'Done').length;
   const myActionTasks = tasks.filter((t) => t.assigneeId === 'user-1' && t.status !== 'Done');
 

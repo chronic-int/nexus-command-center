@@ -6,11 +6,14 @@ import {
   Paperclip,
   Clock,
   AlertCircle,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
-import { Task } from '../../types';
+import { Task, TaskStatus } from '../../types';
 import { useApp } from '../../context/AppContext';
 import { PriorityBadge } from '../common/Badge';
 import { Avatar } from '../common/Avatar';
+import { isTaskOverdue } from '../../utils/dateUtils';
 
 interface TaskCardProps {
   task: Task;
@@ -18,13 +21,19 @@ interface TaskCardProps {
   onClick: () => void;
 }
 
+const STATUS_ORDER: TaskStatus[] = ['Backlog', 'Todo', 'In Progress', 'Review', 'Done'];
+
 export const TaskCard: React.FC<TaskCardProps> = ({ task, onDragStart, onClick }) => {
-  const { members } = useApp();
+  const { members, moveTaskStatus } = useApp();
   const assignee = members.find((m) => m.id === task.assigneeId);
 
-  // Check if overdue
-  const isOverdue = task.status !== 'Done' && new Date(task.dueDate) < new Date('2026-09-22');
+  // Check if overdue via centralized date logic
+  const isOverdue = isTaskOverdue(task.dueDate, task.status);
   const completedSubtasks = task.subtasks.filter((s) => s.completed).length;
+
+  const currentIndex = STATUS_ORDER.indexOf(task.status);
+  const prevStatus = currentIndex > 0 ? STATUS_ORDER[currentIndex - 1] : null;
+  const nextStatus = currentIndex < STATUS_ORDER.length - 1 ? STATUS_ORDER[currentIndex + 1] : null;
 
   return (
     <div
@@ -33,12 +42,47 @@ export const TaskCard: React.FC<TaskCardProps> = ({ task, onDragStart, onClick }
       onClick={onClick}
       className="group relative bg-white dark:bg-[#131929] hover:bg-slate-50 dark:hover:bg-[#172033] border border-slate-200/90 dark:border-slate-800/90 hover:border-brand-500/50 dark:hover:border-brand-500/50 rounded-xl p-3.5 shadow-xs hover:shadow-md transition-all duration-150 cursor-grab active:cursor-grabbing select-none"
     >
-      {/* Top row: Key & Priority */}
+      {/* Top row: Key, Quick Move Controls & Priority */}
       <div className="flex items-center justify-between gap-2 mb-2">
         <span className="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800/80 text-slate-600 dark:text-slate-400">
           {task.key}
         </span>
-        <PriorityBadge priority={task.priority} size="xs" />
+
+        <div className="flex items-center gap-1.5">
+          {/* Touch & keyboard quick status navigators */}
+          <div className="flex items-center">
+            {prevStatus && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  moveTaskStatus(task.id, prevStatus);
+                }}
+                className="p-1 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                title={`Move to ${prevStatus}`}
+                aria-label={`Move task ${task.key} back to ${prevStatus}`}
+              >
+                <ChevronLeft className="w-3 h-3" />
+              </button>
+            )}
+            {nextStatus && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  moveTaskStatus(task.id, nextStatus);
+                }}
+                className="p-1 rounded text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 hover:bg-brand-50 dark:hover:bg-brand-950/30 transition-colors"
+                title={`Advance to ${nextStatus}`}
+                aria-label={`Advance task ${task.key} to ${nextStatus}`}
+              >
+                <ChevronRight className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+
+          <PriorityBadge priority={task.priority} size="xs" />
+        </div>
       </div>
 
       {/* Task Title */}

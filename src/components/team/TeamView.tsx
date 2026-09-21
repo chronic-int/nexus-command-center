@@ -7,6 +7,8 @@ import {
   FolderKanban,
   CheckCircle2,
   SlidersHorizontal,
+  Clock,
+  X,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { Avatar } from '../common/Avatar';
@@ -18,6 +20,8 @@ export const TeamView: React.FC = () => {
     members,
     tasks,
     projects,
+    pendingInvitations,
+    cancelInvitation,
     setSelectedMemberId,
     setIsQuickCreateOpen,
     setQuickCreateDefaultTab,
@@ -76,6 +80,59 @@ export const TeamView: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* Pending Invitations Section */}
+      {pendingInvitations.length > 0 && (
+        <div className="p-4 rounded-2xl bg-amber-500/5 dark:bg-amber-500/10 border border-amber-500/20 shadow-xs">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Mail className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+              <h3 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider">
+                Pending Invitations ({pendingInvitations.length})
+              </h3>
+            </div>
+            <span className="text-[11px] text-amber-600 dark:text-amber-400 font-medium">
+              Staged locally — awaiting employee acceptance
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {pendingInvitations.map((inv) => (
+              <div
+                key={inv.id}
+                className="p-3.5 rounded-xl bg-white dark:bg-[#121826] border border-slate-200 dark:border-slate-800 shadow-xs flex items-center justify-between gap-3"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <p className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                      {inv.email}
+                    </p>
+                    <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 font-medium shrink-0">
+                      {inv.status}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                    {inv.role} • <span className="text-slate-400">{inv.department}</span>
+                  </p>
+                  <p className="text-[10px] text-slate-400 mt-1 flex items-center gap-1">
+                    <Clock className="w-3 h-3" />
+                    <span>Invited: {inv.invitedAt}</span>
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => cancelInvitation(inv.id)}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-colors shrink-0"
+                  title="Revoke / Cancel Invitation"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Filters bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-xl bg-white dark:bg-[#121826] border border-slate-200 dark:border-slate-800 text-xs shadow-xs">

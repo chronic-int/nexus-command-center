@@ -4,6 +4,7 @@ import {
   Task,
   Project,
   TeamMember,
+  PendingInvitation,
   Document,
   Notification,
   AutomationRule,
@@ -24,12 +25,27 @@ import {
   INITIAL_AUTOMATIONS,
   INITIAL_ACTIVITIES,
 } from '../data/seedData';
+import {
+  STORAGE_KEYS,
+  getStoredItem,
+  setStoredItem,
+  clearNexusStorage,
+} from '../utils/storage';
+import { getTodayString, isTaskOverdue, formatRelativeTime } from '../utils/dateUtils';
+import { generateEntityId, getNextTaskKey } from '../utils/idGenerator';
+import {
+  calculateProjectProgress,
+  calculateProjectHealth,
+  calculateMemberWorkload,
+} from '../utils/metrics';
+import { processWorkspaceAutomation } from '../utils/automationEngine';
 
 interface AppContextType {
   // Collections
   projects: Project[];
   tasks: Task[];
   members: TeamMember[];
+  pendingInvitations: PendingInvitation[];
   documents: Document[];
   notifications: Notification[];
   automations: AutomationRule[];
@@ -102,6 +118,10 @@ interface AppContextType {
   updateProject: (id: string, updates: Partial<Project>) => void;
   deleteProject: (id: string) => void;
 
+  // Invitation Actions
+  createInvitation: (invitation: Omit<PendingInvitation, 'id' | 'invitedAt' | 'status'>) => PendingInvitation;
+  cancelInvitation: (id: string) => void;
+
   // Document Actions
   createDocument: (data: Partial<Document>) => Document;
   updateDocument: (id: string, updates: Partial<Document>) => void;
@@ -129,44 +149,53 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
-const STORAGE_KEYS = {
-  PROJECTS: 'nexus_projects_v1',
-  TASKS: 'nexus_tasks_v1',
-  MEMBERS: 'nexus_members_v1',
-  DOCUMENTS: 'nexus_documents_v1',
-  NOTIFICATIONS: 'nexus_notifications_v1',
-  AUTOMATIONS: 'nexus_automations_v1',
-  ACTIVITIES: 'nexus_activities_v1',
-  THEME: 'nexus_theme_mode',
-  DENSITY: 'nexus_density_mode',
-  SIDEBAR: 'nexus_sidebar_collapsed',
-  DISMISSED_INSIGHTS: 'nexus_dismissed_insights_v1',
-  USEFUL_INSIGHTS: 'nexus_useful_insights_v1',
-};
-
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // Persistence state helpers
-  const getStored = <T,>(key: string, fallback: T): T => {
-    try {
-      const item = localStorage.getItem(key);
-      return item ? JSON.parse(item) : fallback;
-    } catch {
-      return fallback;
-    }
-  };
-
-  const [projects, setProjects] = useState<Project[]>(() => getStored(STORAGE_KEYS.PROJECTS, INITIAL_PROJECTS));
-  const [tasks, setTasks] = useState<Task[]>(() => getStored(STORAGE_KEYS.TASKS, INITIAL_TASKS));
-  const [members, setMembers] = useState<TeamMember[]>(() => getStored(STORAGE_KEYS.MEMBERS, INITIAL_MEMBERS));
-  const [documents, setDocuments] = useState<Document[]>(() => getStored(STORAGE_KEYS.DOCUMENTS, INITIAL_DOCUMENTS));
-  const [notifications, setNotifications] = useState<Notification[]>(() => getStored(STORAGE_KEYS.NOTIFICATIONS, INITIAL_NOTIFICATIONS));
-  const [automations, setAutomations] = useState<AutomationRule[]>(() => getStored(STORAGE_KEYS.AUTOMATIONS, INITIAL_AUTOMATIONS));
-  const [activities, setActivities] = useState<ActivityItem[]>(() => getStored(STORAGE_KEYS.ACTIVITIES, INITIAL_ACTIVITIES));
+  // 1. Initial State Hydration with Scoped LocalStorage
+  const [projects, setProjects] = useState<Project[]>(() =>
+    getStoredItem(STORAGE_KEYS.PROJECTS, INITIAL_PROJECTS)
+  );
+  const [tasks, setTasks] = useState<Task[]>(() =>
+    getStoredItem(STORAGE_KEYS.TASKS, INITIAL_TASKS)
+  );
+  const [members, setMembers] = useState<TeamMember[]>(() =>
+    getStoredItem(STORAGE_KEYS.MEMBERS, INITIAL_MEMBERS)
+  );
+  const [pendingInvitations, setPendingInvitations] = useState<PendingInvitation[]>(() =>
+    getStoredItem(STORAGE_KEYS.INVITATIONS, [
+      {
+        id: 'inv_init_1',
+        email: 'jordan.zhao@nexus.io',
+        name: 'Jordan Zhao',
+        role: 'Staff Frontend Engineer',
+        department: 'Engineering',
+        invitedAt: 'Yesterday',
+        status: 'Pending',
+      },
+    ])
+  );
+  const [documents, setDocuments] = useState<Document[]>(() =>
+    getStoredItem(STORAGE_KEYS.DOCUMENTS, INITIAL_DOCUMENTS)
+  );
+  const [notifications, setNotifications] = useState<Notification[]>(() =>
+    getStoredItem(STORAGE_KEYS.NOTIFICATIONS, INITIAL_NOTIFICATIONS)
+  );
+  const [automations, setAutomations] = useState<AutomationRule[]>(() =>
+    getStoredItem(STORAGE_KEYS.AUTOMATIONS, INITIAL_AUTOMATIONS)
+  );
+  const [activities, setActivities] = useState<ActivityItem[]>(() =>
+    getStoredItem(STORAGE_KEYS.ACTIVITIES, INITIAL_ACTIVITIES)
+  );
 
   // Theming & Density
-  const [theme, setThemeState] = useState<ThemeMode>(() => getStored(STORAGE_KEYS.THEME, 'dark'));
-  const [density, setDensityState] = useState<DensityMode>(() => getStored(STORAGE_KEYS.DENSITY, 'comfortable'));
-  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => getStored(STORAGE_KEYS.SIDEBAR, false));
+  const [theme, setThemeState] = useState<ThemeMode>(() =>
+    getStoredItem(STORAGE_KEYS.THEME, 'dark')
+  );
+  const [density, setDensityState] = useState<DensityMode>(() =>
+    getStoredItem(STORAGE_KEYS.DENSITY, 'comfortable')
+  );
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() =>
+    getStoredItem(STORAGE_KEYS.SIDEBAR, false)
+  );
 
   // Navigation state
   const [activeView, setActiveView] = useState<string>('overview');
@@ -188,57 +217,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isSearchOpen, setIsSearchOpen] = useState<boolean>(false);
 
   // Insights tracked metadata
-  const [dismissedInsightIds, setDismissedInsightIds] = useState<string[]>(() => getStored(STORAGE_KEYS.DISMISSED_INSIGHTS, []));
-  const [usefulInsightCounts, setUsefulInsightCounts] = useState<Record<string, number>>(() => getStored(STORAGE_KEYS.USEFUL_INSIGHTS, {}));
+  const [dismissedInsightIds, setDismissedInsightIds] = useState<string[]>(() =>
+    getStoredItem(STORAGE_KEYS.DISMISSED_INSIGHTS, [])
+  );
+  const [usefulInsightCounts, setUsefulInsightCounts] = useState<Record<string, number>>(() =>
+    getStoredItem(STORAGE_KEYS.USEFUL_INSIGHTS, {})
+  );
 
   // Toasts
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
-  // Sync state to LocalStorage
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify(projects));
-  }, [projects]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(tasks));
-  }, [tasks]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.MEMBERS, JSON.stringify(members));
-  }, [members]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.DOCUMENTS, JSON.stringify(documents));
-  }, [documents]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.NOTIFICATIONS, JSON.stringify(notifications));
-  }, [notifications]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.AUTOMATIONS, JSON.stringify(automations));
-  }, [automations]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.ACTIVITIES, JSON.stringify(activities));
-  }, [activities]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.SIDEBAR, JSON.stringify(sidebarCollapsed));
-  }, [sidebarCollapsed]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.DISMISSED_INSIGHTS, JSON.stringify(dismissedInsightIds));
-  }, [dismissedInsightIds]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.USEFUL_INSIGHTS, JSON.stringify(usefulInsightCounts));
-  }, [usefulInsightCounts]);
+  // 2. Persistence Synchronization
+  useEffect(() => setStoredItem(STORAGE_KEYS.PROJECTS, projects), [projects]);
+  useEffect(() => setStoredItem(STORAGE_KEYS.TASKS, tasks), [tasks]);
+  useEffect(() => setStoredItem(STORAGE_KEYS.MEMBERS, members), [members]);
+  useEffect(() => setStoredItem(STORAGE_KEYS.INVITATIONS, pendingInvitations), [pendingInvitations]);
+  useEffect(() => setStoredItem(STORAGE_KEYS.DOCUMENTS, documents), [documents]);
+  useEffect(() => setStoredItem(STORAGE_KEYS.NOTIFICATIONS, notifications), [notifications]);
+  useEffect(() => setStoredItem(STORAGE_KEYS.AUTOMATIONS, automations), [automations]);
+  useEffect(() => setStoredItem(STORAGE_KEYS.ACTIVITIES, activities), [activities]);
+  useEffect(() => setStoredItem(STORAGE_KEYS.SIDEBAR, sidebarCollapsed), [sidebarCollapsed]);
+  useEffect(() => setStoredItem(STORAGE_KEYS.DISMISSED_INSIGHTS, dismissedInsightIds), [dismissedInsightIds]);
+  useEffect(() => setStoredItem(STORAGE_KEYS.USEFUL_INSIGHTS, usefulInsightCounts), [usefulInsightCounts]);
 
   // Apply Theme
   const setTheme = useCallback((newTheme: ThemeMode) => {
     setThemeState(newTheme);
-    localStorage.setItem(STORAGE_KEYS.THEME, JSON.stringify(newTheme));
+    setStoredItem(STORAGE_KEYS.THEME, newTheme);
   }, []);
 
   useEffect(() => {
@@ -254,7 +259,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Apply Density
   const setDensity = useCallback((newDensity: DensityMode) => {
     setDensityState(newDensity);
-    localStorage.setItem(STORAGE_KEYS.DENSITY, JSON.stringify(newDensity));
+    setStoredItem(STORAGE_KEYS.DENSITY, newDensity);
   }, []);
 
   useEffect(() => {
@@ -265,154 +270,197 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Toast Dispatcher
   const addToast = useCallback((toast: Omit<ToastMessage, 'id'>) => {
-    const id = `toast-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const id = generateEntityId('toast');
     const newToast: ToastMessage = { ...toast, id };
-    setToasts(prev => [...prev, newToast]);
+    setToasts((prev) => [...prev, newToast]);
 
     const duration = toast.duration ?? 4500;
     setTimeout(() => {
-      setToasts(prev => prev.filter(t => t.id !== id));
+      setToasts((prev) => prev.filter((t) => t.id !== id));
     }, duration);
   }, []);
 
   const removeToast = useCallback((id: string) => {
-    setToasts(prev => prev.filter(t => t.id !== id));
+    setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  // Recalculate project progress when tasks change
-  const syncProjectProgress = useCallback((updatedTasks: Task[], targetProjectId?: string) => {
-    setProjects(prevProjects => {
-      return prevProjects.map(proj => {
-        if (targetProjectId && proj.id !== targetProjectId) return proj;
-        const projectTasks = updatedTasks.filter(t => t.projectId === proj.id);
-        if (projectTasks.length === 0) return proj;
-        const doneTasks = projectTasks.filter(t => t.status === 'Done').length;
-        const progress = Math.round((doneTasks / projectTasks.length) * 100);
+  // Recalculate derived state for affected projects & members cleanly outside state setters
+  const recomputeRelationalMetrics = useCallback(
+    (nextTasks: Task[], affectedProjectIds?: string[]) => {
+      setProjects((prevProjects) =>
+        prevProjects.map((p) => {
+          if (affectedProjectIds && !affectedProjectIds.includes(p.id)) return p;
+          const progress = calculateProjectProgress(nextTasks, p.id);
+          const health = calculateProjectHealth(nextTasks, p.id, p.health);
+          return { ...p, progress, health };
+        })
+      );
 
-        // Check health status dynamically
-        const urgentCount = projectTasks.filter(t => t.priority === 'Urgent' && t.status !== 'Done').length;
-        const overdueCount = projectTasks.filter(t => {
-          if (t.status === 'Done') return false;
-          return new Date(t.dueDate) < new Date('2026-09-22');
-        }).length;
+      setMembers((prevMembers) =>
+        prevMembers.map((m) => {
+          const workload = calculateMemberWorkload(nextTasks, m.id);
+          return { ...m, workload };
+        })
+      );
+    },
+    []
+  );
 
-        let health = proj.health;
-        if (urgentCount >= 3 || overdueCount >= 2) {
-          health = 'Delayed';
-        } else if (urgentCount >= 1 || overdueCount >= 1) {
-          health = 'At Risk';
-        } else {
-          health = 'On Track';
+  // Trigger automation engine cleanly
+  const runAutomationEngine = useCallback(
+    (
+      eventType: 'TASK_CREATED' | 'STATUS_CHANGED' | 'PRIORITY_CHANGED' | 'DEADLINE_OVERDUE',
+      task: Task,
+      previousTask?: Task
+    ) => {
+      const result = processWorkspaceAutomation(
+        automations,
+        { type: eventType, task, previousTask },
+        tasks,
+        projects
+      );
+
+      if (result.triggeredRuleIds.length > 0) {
+        // Update lastTriggered on matching rules
+        setAutomations((prev) =>
+          prev.map((r) =>
+            result.triggeredRuleIds.includes(r.id)
+              ? { ...r, lastTriggered: 'Just now' }
+              : r
+          )
+        );
+
+        if (result.newNotifications.length > 0) {
+          setNotifications((prev) => [...result.newNotifications, ...prev]);
         }
 
-        return { ...proj, progress, health };
-      });
-    });
-  }, []);
+        if (result.newActivities.length > 0) {
+          setActivities((prev) => [...result.newActivities, ...prev]);
+        }
 
-  // Recalculate members workload based on assigned open tasks
-  const syncMembersWorkload = useCallback((updatedTasks: Task[]) => {
-    setMembers(prevMembers => {
-      return prevMembers.map(member => {
-        const assignedTasks = updatedTasks.filter(t => t.assigneeId === member.id && t.status !== 'Done');
-        const workload = Math.min(100, Math.round(assignedTasks.length * 18 + 20));
-        return { ...member, workload };
-      });
-    });
-  }, []);
+        // Re-apply any task or project mutations generated by automations
+        if (result.updatedTasks !== tasks) {
+          setTasks(result.updatedTasks);
+          recomputeRelationalMetrics(result.updatedTasks);
+        }
+      }
+    },
+    [automations, tasks, projects, recomputeRelationalMetrics]
+  );
 
-  // Task Actions
-  const createTask = useCallback((data: Partial<Task>): Task => {
-    const project = projects.find(p => p.id === data.projectId) || projects[0];
-    const projectTasks = tasks.filter(t => t.projectId === project.id);
-    const key = `${project.key}-${100 + projectTasks.length + 1}`;
+  // 3. Pure, Deterministic Task Actions
+  const createTask = useCallback(
+    (data: Partial<Task>): Task => {
+      const project = projects.find((p) => p.id === data.projectId) || projects[0];
+      const key = getNextTaskKey(project.key, tasks);
+      const now = new Date().toISOString();
 
-    const newTask: Task = {
-      id: `task-${Date.now()}`,
-      key,
-      title: data.title || 'Untitled Task',
-      description: data.description || '',
-      status: data.status || 'Todo',
-      priority: data.priority || 'Medium',
-      projectId: project.id,
-      assigneeId: data.assigneeId || 'user-1',
-      dueDate: data.dueDate || new Date(Date.now() + 86400000 * 7).toISOString().split('T')[0],
-      labels: data.labels || ['General'],
-      subtasks: data.subtasks || [],
-      comments: data.comments || [],
-      attachments: data.attachments || [],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
+      const newTask: Task = {
+        id: generateEntityId('task'),
+        key,
+        title: data.title?.trim() || 'Untitled Task',
+        description: data.description?.trim() || '',
+        status: data.status || 'Todo',
+        priority: data.priority || 'Medium',
+        projectId: project.id,
+        assigneeId: data.assigneeId || 'user-1',
+        dueDate: data.dueDate || getTodayString(),
+        startDate: data.startDate,
+        estimatedHours: data.estimatedHours || 8,
+        labels: data.labels || ['General'],
+        subtasks: data.subtasks || [],
+        comments: data.comments || [],
+        attachments: data.attachments || [],
+        createdAt: now,
+        updatedAt: now,
+      };
 
-    const newTasks = [newTask, ...tasks];
-    setTasks(newTasks);
-    syncProjectProgress(newTasks, project.id);
-    syncMembersWorkload(newTasks);
+      const nextTasks = [newTask, ...tasks];
+      setTasks(nextTasks);
+      recomputeRelationalMetrics(nextTasks, [project.id]);
 
-    // Record activity
-    const newActivity: ActivityItem = {
-      id: `act-${Date.now()}`,
-      userId: 'user-1',
-      action: 'created task',
-      targetName: newTask.title,
-      targetType: 'task',
-      targetId: newTask.id,
-      timestamp: 'Just now',
-      projectId: project.id,
-    };
-    setActivities(prev => [newActivity, ...prev]);
-
-    addToast({
-      type: 'success',
-      title: 'Task Created',
-      message: `${newTask.key}: ${newTask.title}`,
-    });
-
-    return newTask;
-  }, [projects, tasks, syncProjectProgress, syncMembersWorkload, addToast]);
-
-  const updateTask = useCallback((id: string, updates: Partial<Task>) => {
-    setTasks(prev => {
-      const target = prev.find(t => t.id === id);
-      if (!target) return prev;
-      const updated = { ...target, ...updates, updatedAt: new Date().toISOString() };
-      const next = prev.map(t => (t.id === id ? updated : t));
-
-      syncProjectProgress(next, updated.projectId);
-      syncMembersWorkload(next);
-      return next;
-    });
-
-    addToast({
-      type: 'info',
-      title: 'Task Updated',
-      message: 'Changes saved automatically',
-      duration: 2000,
-    });
-  }, [syncProjectProgress, syncMembersWorkload, addToast]);
-
-  const moveTaskStatus = useCallback((id: string, status: TaskStatus) => {
-    let completedProjectName = '';
-    let completedTitle = '';
-
-    setTasks(prev => {
-      const target = prev.find(t => t.id === id);
-      if (!target || target.status === status) return prev;
-
-      completedTitle = target.title;
-      const project = projects.find(p => p.id === target.projectId);
-      if (project) completedProjectName = project.name;
-
-      const updated = { ...target, status, updatedAt: new Date().toISOString() };
-      const next = prev.map(t => (t.id === id ? updated : t));
-
-      syncProjectProgress(next, target.projectId);
-      syncMembersWorkload(next);
-
-      // Add activity
+      // Record Activity
       const newActivity: ActivityItem = {
-        id: `act-${Date.now()}`,
+        id: generateEntityId('act'),
+        userId: 'user-1',
+        action: 'created task',
+        targetName: newTask.title,
+        targetType: 'task',
+        targetId: newTask.id,
+        timestamp: 'Just now',
+        projectId: project.id,
+      };
+      setActivities((prev) => [newActivity, ...prev]);
+
+      // Run automation check
+      runAutomationEngine('TASK_CREATED', newTask);
+
+      addToast({
+        type: 'success',
+        title: 'Task Created',
+        message: `${newTask.key}: ${newTask.title}`,
+      });
+
+      return newTask;
+    },
+    [projects, tasks, recomputeRelationalMetrics, runAutomationEngine, addToast]
+  );
+
+  const updateTask = useCallback(
+    (id: string, updates: Partial<Task>) => {
+      const previousTask = tasks.find((t) => t.id === id);
+      if (!previousTask) return;
+
+      const updatedTask: Task = {
+        ...previousTask,
+        ...updates,
+        updatedAt: new Date().toISOString(),
+      };
+
+      const nextTasks = tasks.map((t) => (t.id === id ? updatedTask : t));
+      setTasks(nextTasks);
+
+      // Projects affected: both previous and updated project if changed
+      const affectedProjectIds = [previousTask.projectId];
+      if (updatedTask.projectId !== previousTask.projectId) {
+        affectedProjectIds.push(updatedTask.projectId);
+      }
+      recomputeRelationalMetrics(nextTasks, affectedProjectIds);
+
+      // Check if priority changed
+      if (updates.priority && updates.priority !== previousTask.priority) {
+        runAutomationEngine('PRIORITY_CHANGED', updatedTask, previousTask);
+      }
+
+      addToast({
+        type: 'info',
+        title: 'Task Updated',
+        message: 'Changes saved automatically',
+        duration: 2000,
+      });
+    },
+    [tasks, recomputeRelationalMetrics, runAutomationEngine, addToast]
+  );
+
+  const moveTaskStatus = useCallback(
+    (id: string, status: TaskStatus) => {
+      const target = tasks.find((t) => t.id === id);
+      if (!target || target.status === status) return;
+
+      const previousTask = { ...target };
+      const updatedTask: Task = {
+        ...target,
+        status,
+        updatedAt: new Date().toISOString(),
+      };
+
+      const nextTasks = tasks.map((t) => (t.id === id ? updatedTask : t));
+      setTasks(nextTasks);
+      recomputeRelationalMetrics(nextTasks, [target.projectId]);
+
+      // Add Activity
+      const newActivity: ActivityItem = {
+        id: generateEntityId('act'),
         userId: 'user-1',
         action: `moved task to ${status}`,
         targetName: target.title,
@@ -421,277 +469,373 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         timestamp: 'Just now',
         projectId: target.projectId,
       };
-      setActivities(actPrev => [newActivity, ...actPrev]);
+      setActivities((prev) => [newActivity, ...prev]);
 
-      return next;
-    });
+      // Run Automation Check
+      runAutomationEngine('STATUS_CHANGED', updatedTask, previousTask);
 
-    if (status === 'Done') {
-      confetti({
-        particleCount: 60,
-        spread: 60,
-        origin: { y: 0.7 },
-        colors: ['#6366f1', '#10b981', '#38bdf8'],
-      });
+      if (status === 'Done') {
+        confetti({
+          particleCount: 60,
+          spread: 60,
+          origin: { y: 0.7 },
+          colors: ['#6366f1', '#10b981', '#38bdf8'],
+        });
+        addToast({
+          type: 'success',
+          title: 'Task Completed! 🎉',
+          message: `${target.title} marked as Done`,
+        });
+      }
+    },
+    [tasks, recomputeRelationalMetrics, runAutomationEngine, addToast]
+  );
+
+  const deleteTask = useCallback(
+    (id: string) => {
+      const target = tasks.find((t) => t.id === id);
+      if (!target) return;
+
+      const nextTasks = tasks.filter((t) => t.id !== id);
+      setTasks(nextTasks);
+      recomputeRelationalMetrics(nextTasks, [target.projectId]);
+
+      if (selectedTaskId === id) setSelectedTaskId(null);
+
+      // Toast with Undo
       addToast({
-        type: 'success',
-        title: 'Task Completed! 🎉',
-        message: `${completedTitle} marked as Done in ${completedProjectName}`,
-      });
-    }
-  }, [projects, syncProjectProgress, syncMembersWorkload, addToast]);
-
-  const deleteTask = useCallback((id: string) => {
-    const target = tasks.find(t => t.id === id);
-    if (!target) return;
-
-    const remainingTasks = tasks.filter(t => t.id !== id);
-    setTasks(remainingTasks);
-    syncProjectProgress(remainingTasks, target.projectId);
-    syncMembersWorkload(remainingTasks);
-
-    if (selectedTaskId === id) setSelectedTaskId(null);
-
-    // Toast with Undo option
-    addToast({
-      type: 'warning',
-      title: 'Task Deleted',
-      message: `${target.key} was removed`,
-      action: {
-        label: 'Undo',
-        onClick: () => {
-          setTasks(prev => {
-            const restored = [target, ...prev];
-            syncProjectProgress(restored, target.projectId);
-            syncMembersWorkload(restored);
-            return restored;
-          });
+        type: 'warning',
+        title: 'Task Deleted',
+        message: `${target.key} was removed`,
+        action: {
+          label: 'Undo',
+          onClick: () => {
+            setTasks((curr) => {
+              const restored = [target, ...curr];
+              recomputeRelationalMetrics(restored, [target.projectId]);
+              return restored;
+            });
+          },
         },
-      },
-      duration: 6000,
-    });
-  }, [tasks, selectedTaskId, syncProjectProgress, syncMembersWorkload, addToast]);
+        duration: 6000,
+      });
+    },
+    [tasks, selectedTaskId, recomputeRelationalMetrics, addToast]
+  );
 
-  const duplicateTask = useCallback((id: string) => {
-    const target = tasks.find(t => t.id === id);
-    if (!target) return;
-    createTask({
-      ...target,
-      title: `${target.title} (Copy)`,
-      status: 'Todo',
-      subtasks: target.subtasks.map(s => ({ ...s, id: `sub-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`, completed: false })),
-      comments: [],
-    });
-  }, [tasks, createTask]);
+  const duplicateTask = useCallback(
+    (id: string) => {
+      const target = tasks.find((t) => t.id === id);
+      if (!target) return;
+
+      createTask({
+        ...target,
+        title: `${target.title} (Copy)`,
+        status: 'Todo',
+        subtasks: target.subtasks.map((s) => ({
+          id: generateEntityId('sub'),
+          title: s.title,
+          completed: false,
+        })),
+        comments: [],
+      });
+    },
+    [tasks, createTask]
+  );
 
   const addSubtask = useCallback((taskId: string, title: string) => {
     if (!title.trim()) return;
-    const newSub: { id: string; title: string; completed: boolean } = {
-      id: `sub-${Date.now()}`,
+    const newSub = {
+      id: generateEntityId('sub'),
       title: title.trim(),
       completed: false,
     };
-    setTasks(prev => prev.map(t => (t.id === taskId ? { ...t, subtasks: [...t.subtasks, newSub] } : t)));
+    setTasks((prev) =>
+      prev.map((t) =>
+        t.id === taskId ? { ...t, subtasks: [...t.subtasks, newSub], updatedAt: new Date().toISOString() } : t
+      )
+    );
   }, []);
 
   const toggleSubtask = useCallback((taskId: string, subtaskId: string) => {
-    setTasks(prev =>
-      prev.map(t => {
+    setTasks((prev) =>
+      prev.map((t) => {
         if (t.id !== taskId) return t;
         return {
           ...t,
-          subtasks: t.subtasks.map(s => (s.id === subtaskId ? { ...s, completed: !s.completed } : s)),
+          subtasks: t.subtasks.map((s) =>
+            s.id === subtaskId ? { ...s, completed: !s.completed } : s
+          ),
+          updatedAt: new Date().toISOString(),
         };
       })
     );
   }, []);
 
   const deleteSubtask = useCallback((taskId: string, subtaskId: string) => {
-    setTasks(prev =>
-      prev.map(t => {
+    setTasks((prev) =>
+      prev.map((t) => {
         if (t.id !== taskId) return t;
         return {
           ...t,
-          subtasks: t.subtasks.filter(s => s.id !== subtaskId),
+          subtasks: t.subtasks.filter((s) => s.id !== subtaskId),
+          updatedAt: new Date().toISOString(),
         };
       })
     );
   }, []);
 
-  const addComment = useCallback((taskId: string, content: string) => {
-    if (!content.trim()) return;
-    const comment = {
-      id: `comm-${Date.now()}`,
-      authorId: 'user-1', // current user
-      content: content.trim(),
-      timestamp: new Date().toISOString(),
-    };
-    setTasks(prev =>
-      prev.map(t => {
-        if (t.id !== taskId) return t;
-        return { ...t, comments: [...t.comments, comment] };
-      })
-    );
-    addToast({
-      type: 'success',
-      title: 'Comment posted',
-      duration: 2000,
-    });
-  }, [addToast]);
+  const addComment = useCallback(
+    (taskId: string, content: string) => {
+      if (!content.trim()) return;
+      const comment = {
+        id: generateEntityId('comm'),
+        authorId: 'user-1',
+        content: content.trim(),
+        timestamp: new Date().toISOString(),
+      };
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.id === taskId
+            ? { ...t, comments: [...t.comments, comment], updatedAt: new Date().toISOString() }
+            : t
+        )
+      );
+      addToast({
+        type: 'success',
+        title: 'Comment posted',
+        duration: 2000,
+      });
+    },
+    [addToast]
+  );
 
-  const bulkUpdateTasks = useCallback((ids: string[], updates: Partial<Task>) => {
-    setTasks(prev => {
-      const next = prev.map(t => (ids.includes(t.id) ? { ...t, ...updates, updatedAt: new Date().toISOString() } : t));
-      syncProjectProgress(next);
-      syncMembersWorkload(next);
-      return next;
-    });
-    addToast({
-      type: 'info',
-      title: 'Bulk Update Applied',
-      message: `Updated ${ids.length} tasks`,
-    });
-  }, [syncProjectProgress, syncMembersWorkload, addToast]);
+  const bulkUpdateTasks = useCallback(
+    (ids: string[], updates: Partial<Task>) => {
+      const affectedProjectIds = new Set<string>();
+      const nextTasks = tasks.map((t) => {
+        if (!ids.includes(t.id)) return t;
+        affectedProjectIds.add(t.projectId);
+        if (updates.projectId) affectedProjectIds.add(updates.projectId);
+        return { ...t, ...updates, updatedAt: new Date().toISOString() };
+      });
 
-  const bulkDeleteTasks = useCallback((ids: string[]) => {
-    const deleted = tasks.filter(t => ids.includes(t.id));
-    setTasks(prev => {
-      const next = prev.filter(t => !ids.includes(t.id));
-      syncProjectProgress(next);
-      syncMembersWorkload(next);
-      return next;
-    });
-    addToast({
-      type: 'warning',
-      title: 'Bulk Tasks Deleted',
-      message: `Removed ${ids.length} tasks`,
-      action: {
-        label: 'Undo',
-        onClick: () => {
-          setTasks(prev => {
-            const restored = [...deleted, ...prev];
-            syncProjectProgress(restored);
-            syncMembersWorkload(restored);
-            return restored;
-          });
+      setTasks(nextTasks);
+      recomputeRelationalMetrics(nextTasks, Array.from(affectedProjectIds));
+
+      addToast({
+        type: 'info',
+        title: 'Bulk Update Applied',
+        message: `Updated ${ids.length} tasks`,
+      });
+    },
+    [tasks, recomputeRelationalMetrics, addToast]
+  );
+
+  const bulkDeleteTasks = useCallback(
+    (ids: string[]) => {
+      const deleted = tasks.filter((t) => ids.includes(t.id));
+      const nextTasks = tasks.filter((t) => !ids.includes(t.id));
+      const affectedProjectIds = Array.from(new Set(deleted.map((t) => t.projectId)));
+
+      setTasks(nextTasks);
+      recomputeRelationalMetrics(nextTasks, affectedProjectIds);
+
+      addToast({
+        type: 'warning',
+        title: 'Bulk Tasks Deleted',
+        message: `Removed ${ids.length} tasks`,
+        action: {
+          label: 'Undo',
+          onClick: () => {
+            setTasks((curr) => {
+              const restored = [...deleted, ...curr];
+              recomputeRelationalMetrics(restored, affectedProjectIds);
+              return restored;
+            });
+          },
         },
-      },
-      duration: 6000,
-    });
-  }, [tasks, syncProjectProgress, syncMembersWorkload, addToast]);
+        duration: 6000,
+      });
+    },
+    [tasks, recomputeRelationalMetrics, addToast]
+  );
 
-  // Project Actions
-  const createProject = useCallback((data: Partial<Project>): Project => {
-    const newProject: Project = {
-      id: `proj-${Date.now()}`,
-      key: data.key?.toUpperCase() || `PRJ-${projects.length + 1}`,
-      name: data.name || 'Untitled Project',
-      description: data.description || '',
-      category: data.category || 'Engineering',
-      health: 'On Track',
-      progress: 0,
-      deadline: data.deadline || '2026-11-30',
-      startDate: data.startDate || new Date().toISOString().split('T')[0],
-      leadId: data.leadId || 'user-1',
-      memberIds: data.memberIds || ['user-1', 'user-3'],
-      color: data.color || '#6366f1',
-      tags: data.tags || ['Active'],
-    };
+  // 4. Project Actions with Cascading Relational Cleanup
+  const createProject = useCallback(
+    (data: Partial<Project>): Project => {
+      const key = data.key?.toUpperCase().trim() || `PRJ-${projects.length + 1}`;
+      const newProject: Project = {
+        id: generateEntityId('proj'),
+        key,
+        name: data.name?.trim() || 'Untitled Project',
+        description: data.description?.trim() || '',
+        category: data.category || 'Core Infrastructure',
+        health: 'On Track',
+        progress: 0,
+        deadline: data.deadline || getTodayString(),
+        startDate: data.startDate || getTodayString(),
+        leadId: data.leadId || 'user-1',
+        memberIds: data.memberIds || ['user-1', 'user-3'],
+        color: data.color || '#6366f1',
+        tags: data.tags || ['Active'],
+      };
 
-    setProjects(prev => [newProject, ...prev]);
+      setProjects((prev) => [newProject, ...prev]);
 
-    setActivities(prev => [
-      {
-        id: `act-${Date.now()}`,
-        userId: 'user-1',
-        action: 'created project',
-        targetName: newProject.name,
-        targetType: 'project',
-        targetId: newProject.id,
-        timestamp: 'Just now',
-        projectId: newProject.id,
-      },
-      ...prev,
-    ]);
+      setActivities((prev) => [
+        {
+          id: generateEntityId('act'),
+          userId: 'user-1',
+          action: 'created project',
+          targetName: newProject.name,
+          targetType: 'project',
+          targetId: newProject.id,
+          timestamp: 'Just now',
+          projectId: newProject.id,
+        },
+        ...prev,
+      ]);
 
-    addToast({
-      type: 'success',
-      title: 'Project Created',
-      message: newProject.name,
-    });
+      addToast({
+        type: 'success',
+        title: 'Project Created',
+        message: newProject.name,
+      });
 
-    return newProject;
-  }, [projects.length, addToast]);
+      return newProject;
+    },
+    [projects.length, addToast]
+  );
 
-  const updateProject = useCallback((id: string, updates: Partial<Project>) => {
-    setProjects(prev => prev.map(p => (p.id === id ? { ...p, ...updates } : p)));
-    addToast({
-      type: 'info',
-      title: 'Project Updated',
-      duration: 2000,
-    });
-  }, [addToast]);
+  const updateProject = useCallback(
+    (id: string, updates: Partial<Project>) => {
+      setProjects((prev) => prev.map((p) => (p.id === id ? { ...p, ...updates } : p)));
+      addToast({
+        type: 'info',
+        title: 'Project Updated',
+        duration: 2000,
+      });
+    },
+    [addToast]
+  );
 
-  const deleteProject = useCallback((id: string) => {
-    const proj = projects.find(p => p.id === id);
-    if (!proj) return;
-    setProjects(prev => prev.filter(p => p.id !== id));
-    setTasks(prev => prev.filter(t => t.projectId !== id));
-    if (activeProjectId === id) setActiveProjectId(null);
+  const deleteProject = useCallback(
+    (id: string) => {
+      const proj = projects.find((p) => p.id === id);
+      if (!proj) return;
 
-    addToast({
-      type: 'warning',
-      title: 'Project Deleted',
-      message: `${proj.name} and associated tasks removed`,
-    });
-  }, [projects, activeProjectId, addToast]);
+      // Cascading relational cleanup: remove tasks, documents, and target notifications
+      const nextTasks = tasks.filter((t) => t.projectId !== id);
+      setProjects((prev) => prev.filter((p) => p.id !== id));
+      setTasks(nextTasks);
+      setDocuments((prev) => prev.filter((d) => d.projectId !== id));
+      setNotifications((prev) => prev.filter((n) => n.targetId !== id));
 
-  // Document Actions
-  const createDocument = useCallback((data: Partial<Document>): Document => {
-    const newDoc: Document = {
-      id: `doc-${Date.now()}`,
-      title: data.title || 'Untitled Document',
-      type: data.type || 'Spec',
-      projectId: data.projectId || projects[0]?.id || 'proj-1',
-      authorId: 'user-1',
-      lastEdited: new Date().toISOString(),
-      content: data.content || '# ' + (data.title || 'Untitled Document') + '\n\nStart writing specifications and RFCs here...',
-      isFavorite: false,
-      tags: data.tags || ['General'],
-    };
-    setDocuments(prev => [newDoc, ...prev]);
-    addToast({
-      type: 'success',
-      title: 'Document Created',
-      message: newDoc.title,
-    });
-    return newDoc;
-  }, [projects, addToast]);
+      if (activeProjectId === id) setActiveProjectId(null);
+      recomputeRelationalMetrics(nextTasks);
+
+      addToast({
+        type: 'warning',
+        title: 'Project & Associated Records Deleted',
+        message: `${proj.name} was cleanly removed.`,
+      });
+    },
+    [projects, tasks, activeProjectId, recomputeRelationalMetrics, addToast]
+  );
+
+  // 5. Team Invitation Actions (Honest Local Simulation)
+  const createInvitation = useCallback(
+    (invitationData: Omit<PendingInvitation, 'id' | 'invitedAt' | 'status'>): PendingInvitation => {
+      const newInv: PendingInvitation = {
+        ...invitationData,
+        id: generateEntityId('inv'),
+        invitedAt: 'Just now',
+        status: 'Pending',
+      };
+      setPendingInvitations((prev) => [newInv, ...prev]);
+
+      addToast({
+        type: 'success',
+        title: 'Workspace Invitation Created',
+        message: `Registered local invite for ${newInv.name} (${newInv.email}). Ready to join upon auth.`,
+      });
+
+      return newInv;
+    },
+    [addToast]
+  );
+
+  const cancelInvitation = useCallback(
+    (id: string) => {
+      setPendingInvitations((prev) => prev.filter((i) => i.id !== id));
+      addToast({
+        type: 'info',
+        title: 'Invitation Revoked',
+        duration: 2000,
+      });
+    },
+    [addToast]
+  );
+
+  // 6. Document Actions
+  const createDocument = useCallback(
+    (data: Partial<Document>): Document => {
+      const newDoc: Document = {
+        id: generateEntityId('doc'),
+        title: data.title?.trim() || 'Untitled Specification',
+        type: data.type || 'Spec',
+        projectId: data.projectId || projects[0]?.id || 'proj-1',
+        authorId: 'user-1',
+        lastEdited: new Date().toISOString(),
+        content:
+          data.content?.trim() ||
+          `# ${data.title?.trim() || 'Untitled Specification'}\n\nStart writing technical requirements...`,
+        isFavorite: false,
+        tags: data.tags || ['General'],
+      };
+      setDocuments((prev) => [newDoc, ...prev]);
+      addToast({
+        type: 'success',
+        title: 'Document Created',
+        message: newDoc.title,
+      });
+      return newDoc;
+    },
+    [projects, addToast]
+  );
 
   const updateDocument = useCallback((id: string, updates: Partial<Document>) => {
-    setDocuments(prev => prev.map(d => (d.id === id ? { ...d, ...updates, lastEdited: new Date().toISOString() } : d)));
+    setDocuments((prev) =>
+      prev.map((d) =>
+        d.id === id ? { ...d, ...updates, lastEdited: new Date().toISOString() } : d
+      )
+    );
   }, []);
 
-  const deleteDocument = useCallback((id: string) => {
-    setDocuments(prev => prev.filter(d => d.id !== id));
-    if (selectedDocId === id) setSelectedDocId(null);
-    addToast({
-      type: 'info',
-      title: 'Document Deleted',
-    });
-  }, [selectedDocId, addToast]);
+  const deleteDocument = useCallback(
+    (id: string) => {
+      setDocuments((prev) => prev.filter((d) => d.id !== id));
+      if (selectedDocId === id) setSelectedDocId(null);
+      addToast({
+        type: 'info',
+        title: 'Document Deleted',
+      });
+    },
+    [selectedDocId, addToast]
+  );
 
   const toggleFavoriteDocument = useCallback((id: string) => {
-    setDocuments(prev => prev.map(d => (d.id === id ? { ...d, isFavorite: !d.isFavorite } : d)));
+    setDocuments((prev) => prev.map((d) => (d.id === id ? { ...d, isFavorite: !d.isFavorite } : d)));
   }, []);
 
-  // Notification Actions
+  // 7. Notification Actions
   const markNotificationRead = useCallback((id: string) => {
-    setNotifications(prev => prev.map(n => (n.id === id ? { ...n, read: true } : n)));
+    setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
   }, []);
 
   const markAllNotificationsRead = useCallback(() => {
-    setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
     addToast({
       type: 'info',
       title: 'All notifications marked as read',
@@ -700,165 +844,194 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [addToast]);
 
   const deleteNotification = useCallback((id: string) => {
-    setNotifications(prev => prev.filter(n => n.id !== id));
+    setNotifications((prev) => prev.filter((n) => n.id !== id));
   }, []);
 
   const unreadNotificationsCount = useMemo(() => {
-    return notifications.filter(n => !n.read).length;
+    return notifications.filter((n) => !n.read).length;
   }, [notifications]);
 
-  // Automations Actions
-  const toggleAutomationRule = useCallback((id: string) => {
-    setAutomations(prev =>
-      prev.map(r => {
-        if (r.id !== id) return r;
-        const enabled = !r.enabled;
-        addToast({
-          type: 'info',
-          title: `Rule ${enabled ? 'Enabled' : 'Disabled'}`,
-          message: r.name,
-          duration: 2000,
-        });
-        return { ...r, enabled };
-      })
-    );
-  }, [addToast]);
+  // 8. Automations Actions
+  const toggleAutomationRule = useCallback(
+    (id: string) => {
+      setAutomations((prev) =>
+        prev.map((r) => {
+          if (r.id !== id) return r;
+          const enabled = !r.enabled;
+          addToast({
+            type: 'info',
+            title: `Rule ${enabled ? 'Enabled' : 'Disabled'}`,
+            message: r.name,
+            duration: 2000,
+          });
+          return { ...r, enabled };
+        })
+      );
+    },
+    [addToast]
+  );
 
-  const createAutomationRule = useCallback((data: Partial<AutomationRule>) => {
-    const newRule: AutomationRule = {
-      id: `auto-${Date.now()}`,
-      name: data.name || 'New Custom Automation',
-      description: data.description || 'Custom workflow rule',
-      enabled: true,
-      trigger: data.trigger || 'Task status changes',
-      condition: data.condition || 'Priority == Urgent',
-      action: data.action || 'Notify assignees',
-      lastTriggered: 'Never',
-    };
-    setAutomations(prev => [newRule, ...prev]);
-    addToast({
-      type: 'success',
-      title: 'Automation Rule Created',
-      message: newRule.name,
-    });
-  }, [addToast]);
+  const createAutomationRule = useCallback(
+    (data: Partial<AutomationRule>) => {
+      const newRule: AutomationRule = {
+        id: generateEntityId('auto'),
+        name: data.name?.trim() || 'New Automation Rule',
+        description: data.description?.trim() || 'Custom workflow rule',
+        enabled: true,
+        trigger: data.trigger || 'Task status changes to Done',
+        condition: data.condition || 'Status != Done',
+        action: data.action || 'Set Priority = Urgent & Send Notification',
+        lastTriggered: 'Never',
+      };
+      setAutomations((prev) => [newRule, ...prev]);
+      addToast({
+        type: 'success',
+        title: 'Automation Rule Created',
+        message: newRule.name,
+      });
+    },
+    [addToast]
+  );
 
-  const deleteAutomationRule = useCallback((id: string) => {
-    setAutomations(prev => prev.filter(r => r.id !== id));
-    addToast({
-      type: 'info',
-      title: 'Rule Removed',
-    });
-  }, [addToast]);
+  const deleteAutomationRule = useCallback(
+    (id: string) => {
+      setAutomations((prev) => prev.filter((r) => r.id !== id));
+      addToast({
+        type: 'info',
+        title: 'Rule Removed',
+      });
+    },
+    [addToast]
+  );
 
-  const duplicateAutomationRule = useCallback((id: string) => {
-    const rule = automations.find(r => r.id === id);
-    if (!rule) return;
-    createAutomationRule({
-      ...rule,
-      name: `${rule.name} (Copy)`,
-    });
-  }, [automations, createAutomationRule]);
+  const duplicateAutomationRule = useCallback(
+    (id: string) => {
+      const rule = automations.find((r) => r.id === id);
+      if (!rule) return;
+      createAutomationRule({
+        ...rule,
+        name: `${rule.name} (Copy)`,
+      });
+    },
+    [automations, createAutomationRule]
+  );
 
-  // Dynamic AI Insights Engine (computed dynamically based on live tasks, projects, members)
+  // 9. Dynamic AI Insights
   const insights: AIInsight[] = useMemo(() => {
     const generated: AIInsight[] = [];
 
-    // Check project bottlenecks
-    projects.forEach(p => {
-      const pTasks = tasks.filter(t => t.projectId === p.id);
-      const urgentUnresolved = pTasks.filter(t => t.priority === 'Urgent' && t.status !== 'Done');
-      if (urgentUnresolved.length >= 2) {
+    // Project delivery risk assessment
+    projects.forEach((p) => {
+      const pTasks = tasks.filter((t) => t.projectId === p.id);
+      const urgentUnresolved = pTasks.filter(
+        (t) => t.priority === 'Urgent' && t.status !== 'Done'
+      );
+      const overdueTasks = pTasks.filter(
+        (t) => t.status !== 'Done' && isTaskOverdue(t.dueDate, t.status)
+      );
+
+      if (urgentUnresolved.length >= 2 || overdueTasks.length >= 2) {
         generated.push({
-          id: `insight-proj-${p.id}`,
+          id: `insight_proj_${p.id}`,
           type: 'risk',
           title: `Delivery Risk in ${p.name}`,
-          summary: `${p.name} has ${urgentUnresolved.length} unresolved urgent tasks with target deadline ${p.deadline}.`,
-          detail: `Critical path analysis indicates potential release slippage unless high-priority blocker "${urgentUnresolved[0].title}" is re-triaged.`,
+          summary: `${p.name} has ${urgentUnresolved.length} urgent tasks and ${overdueTasks.length} overdue milestones.`,
+          detail: `Critical path analysis indicates schedule slippage toward target deadline (${p.deadline}). Consider re-allocating engineering capacity from on-track sprints.`,
           impact: 'High',
-          usefulCount: usefulInsightCounts[`insight-proj-${p.id}`] || 14,
-          isDismissed: dismissedInsightIds.includes(`insight-proj-${p.id}`),
-          actionLabel: 'Review Kanban Board',
+          usefulCount: usefulInsightCounts[`insight_proj_${p.id}`] || 14,
+          isDismissed: dismissedInsightIds.includes(`insight_proj_${p.id}`),
+          actionLabel: 'Review Board',
           relatedProjectId: p.id,
         });
       }
     });
 
-    // Check member workload imbalance
-    members.forEach(m => {
-      const assigned = tasks.filter(t => t.assigneeId === m.id && t.status !== 'Done');
-      if (assigned.length >= 5 || m.workload > 85) {
+    // Engineer capacity saturation
+    members.forEach((m) => {
+      const activeTasks = tasks.filter(
+        (t) => t.assigneeId === m.id && t.status !== 'Done'
+      );
+      if (activeTasks.length >= 5 || m.workload > 80) {
         generated.push({
-          id: `insight-workload-${m.id}`,
+          id: `insight_workload_${m.id}`,
           type: 'workload',
           title: `Capacity Saturation: ${m.name}`,
-          summary: `${m.name} is currently assigned ${assigned.length} open tasks, exceeding sustainable threshold (${m.workload}% load).`,
-          detail: `Workload skew is 34% above median engineering velocity. Consider load balancing tasks to Marcus Vance or David Kim.`,
+          summary: `${m.name} has ${activeTasks.length} active work items (${m.workload}% load), exceeding recommended sustainability thresholds.`,
+          detail: `Load skew is 38% above team median. High workload increases code review turnaround latency. Consider task rebalancing.`,
           impact: 'Medium',
-          usefulCount: usefulInsightCounts[`insight-workload-${m.id}`] || 9,
-          isDismissed: dismissedInsightIds.includes(`insight-workload-${m.id}`),
-          actionLabel: 'Reassign Tasks',
+          usefulCount: usefulInsightCounts[`insight_workload_${m.id}`] || 9,
+          isDismissed: dismissedInsightIds.includes(`insight_workload_${m.id}`),
+          actionLabel: 'Rebalance Tasks',
           relatedMemberId: m.id,
         });
       }
     });
 
-    // Velocity insight
-    const doneTasksCount = tasks.filter(t => t.status === 'Done').length;
+    // Throughput acceleration
+    const doneCount = tasks.filter((t) => t.status === 'Done').length;
     generated.push({
-      id: 'insight-velocity-core',
+      id: 'insight_velocity_aggregate',
       type: 'velocity',
-      title: 'Engineering Velocity Acceleration',
-      summary: `Team closed ${doneTasksCount} tasks across 6 initiatives this cycle (+18.4% throughput vs baseline).`,
-      detail: `Cycle time from 'Todo' to 'Done' averaged 3.4 days, down from 4.8 days last month, driven by faster code review cycles in Design Systems and Infrastructure.`,
+      title: 'Engineering Throughput Metrics',
+      summary: `Team completed ${doneCount} tasks across ${projects.length} initiatives with steady cycle time.`,
+      detail: `Average task turnaround is currently 3.4 days with zero critical deployment regressions logged this sprint.`,
       impact: 'Low',
-      usefulCount: usefulInsightCounts['insight-velocity-core'] || 27,
-      isDismissed: dismissedInsightIds.includes('insight-velocity-core'),
-      actionLabel: 'View Velocity Analytics',
+      usefulCount: usefulInsightCounts['insight_velocity_aggregate'] || 27,
+      isDismissed: dismissedInsightIds.includes('insight_velocity_aggregate'),
+      actionLabel: 'Telemetry',
     });
 
-    // Return filtered non-dismissed
     return generated;
   }, [projects, tasks, members, dismissedInsightIds, usefulInsightCounts]);
 
-  const dismissInsight = useCallback((id: string) => {
-    setDismissedInsightIds(prev => [...prev, id]);
-    addToast({
-      type: 'info',
-      title: 'Insight Dismissed',
-      duration: 2000,
-    });
-  }, [addToast]);
+  const dismissInsight = useCallback(
+    (id: string) => {
+      setDismissedInsightIds((prev) => [...prev, id]);
+      addToast({
+        type: 'info',
+        title: 'Insight Dismissed',
+        duration: 2000,
+      });
+    },
+    [addToast]
+  );
 
-  const markInsightUseful = useCallback((id: string) => {
-    setUsefulInsightCounts(prev => {
-      const current = prev[id] || 0;
-      return { ...prev, [id]: current + 1 };
-    });
-    addToast({
-      type: 'success',
-      title: 'Feedback Recorded',
-      message: 'Thank you for helping train NEXUS intelligence models.',
-      duration: 2500,
-    });
-  }, [addToast]);
+  const markInsightUseful = useCallback(
+    (id: string) => {
+      setUsefulInsightCounts((prev) => ({
+        ...prev,
+        [id]: (prev[id] || 0) + 1,
+      }));
+      addToast({
+        type: 'success',
+        title: 'Feedback Recorded',
+        message: 'Insight helpfulness score updated.',
+        duration: 2500,
+      });
+    },
+    [addToast]
+  );
 
-  // Global reset
+  // 10. Scoped Non-Destructive Reset
   const resetDemoData = useCallback(() => {
+    // Only clears keys prefixed with 'nexus_'!
+    clearNexusStorage();
+
     setProjects(INITIAL_PROJECTS);
     setTasks(INITIAL_TASKS);
     setMembers(INITIAL_MEMBERS);
+    setPendingInvitations([]);
     setDocuments(INITIAL_DOCUMENTS);
     setNotifications(INITIAL_NOTIFICATIONS);
     setAutomations(INITIAL_AUTOMATIONS);
     setActivities(INITIAL_ACTIVITIES);
     setDismissedInsightIds([]);
     setUsefulInsightCounts({});
-    localStorage.clear();
+
     addToast({
       type: 'success',
-      title: 'Demo Data Reset',
-      message: 'Restored all original projects, tasks, and telemetry.',
+      title: 'Workspace Reset Complete',
+      message: 'Restored original demo data without touching other local storage.',
     });
   }, [addToast]);
 
@@ -867,6 +1040,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       projects,
       tasks,
       members,
+      pendingInvitations,
       documents,
       notifications,
       automations,
@@ -931,6 +1105,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       updateProject,
       deleteProject,
 
+      createInvitation,
+      cancelInvitation,
+
       createDocument,
       updateDocument,
       deleteDocument,
@@ -954,6 +1131,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       projects,
       tasks,
       members,
+      pendingInvitations,
       documents,
       notifications,
       automations,
@@ -995,6 +1173,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       createProject,
       updateProject,
       deleteProject,
+      createInvitation,
+      cancelInvitation,
       createDocument,
       updateDocument,
       deleteDocument,
