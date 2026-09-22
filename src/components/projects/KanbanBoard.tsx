@@ -16,6 +16,9 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ tasks, projectId }) =>
   const [quickAddColumn, setQuickAddColumn] = useState<TaskStatus | null>(null);
   const [quickAddTitle, setQuickAddTitle] = useState('');
   const [mobileActiveColumn, setMobileActiveColumn] = useState<TaskStatus | 'ALL'>('ALL');
+  const [columnCardLimits, setColumnCardLimits] = useState<Record<string, number>>({});
+
+  const INITIAL_CARD_LIMIT = 30;
 
   const columns: { id: TaskStatus; title: string; color: string }[] = [
     { id: 'Backlog', title: 'Backlog', color: 'border-slate-400' },
@@ -200,14 +203,32 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ tasks, projectId }) =>
                     <span className="text-[10px] text-slate-400/80 mt-0.5">Drop tasks here</span>
                   </div>
                 ) : (
-                  colTasks.map((t) => (
-                    <TaskCard
-                      key={t.id}
-                      task={t}
-                      onDragStart={handleDragStart}
-                      onClick={() => setSelectedTaskId(t.id)}
-                    />
-                  ))
+                  <>
+                    {colTasks
+                      .slice(0, columnCardLimits[col.id] || INITIAL_CARD_LIMIT)
+                      .map((t) => (
+                        <TaskCard
+                          key={t.id}
+                          task={t}
+                          onDragStart={handleDragStart}
+                          onClick={() => setSelectedTaskId(t.id)}
+                        />
+                      ))}
+                    {colTasks.length > (columnCardLimits[col.id] || INITIAL_CARD_LIMIT) && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setColumnCardLimits((prev) => ({
+                            ...prev,
+                            [col.id]: (prev[col.id] || INITIAL_CARD_LIMIT) + 50,
+                          }))
+                        }
+                        className="w-full py-1.5 px-2 text-[11px] font-medium text-slate-600 dark:text-slate-400 bg-slate-200/60 dark:bg-slate-800/60 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition-colors"
+                      >
+                        Load more (+50 of {colTasks.length - (columnCardLimits[col.id] || INITIAL_CARD_LIMIT)} remaining)
+                      </button>
+                    )}
+                  </>
                 )}
               </div>
             </div>

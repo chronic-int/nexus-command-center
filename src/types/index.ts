@@ -88,10 +88,12 @@ export interface PendingInvitation {
   status: 'Pending' | 'Accepted' | 'Cancelled';
 }
 
+export type DocumentType = 'Spec' | 'RFC' | 'Meeting Notes' | 'Design System' | 'Architecture';
+
 export interface Document {
   id: string;
   title: string;
-  type: 'Spec' | 'RFC' | 'Meeting Notes' | 'Design System' | 'Architecture';
+  type: DocumentType;
   projectId: string;
   authorId: string;
   lastEdited: string;

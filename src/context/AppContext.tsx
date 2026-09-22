@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import confetti from 'canvas-confetti';
 import {
   Task,
@@ -31,27 +31,28 @@ import {
   setStoredItem,
   clearNexusStorage,
 } from '../utils/storage';
-import { getTodayString, isTaskOverdue, formatRelativeTime } from '../utils/dateUtils';
-import { generateEntityId, getNextTaskKey } from '../utils/idGenerator';
-import {
-  calculateProjectProgress,
-  calculateProjectHealth,
-  calculateMemberWorkload,
-} from '../utils/metrics';
-import { processWorkspaceAutomation } from '../utils/automationEngine';
+import { isTaskOverdue } from '../utils/dateUtils';
+import { generateEntityId } from '../utils/idGenerator';
 import {
   WorkspaceState,
   createTaskOp,
   updateTaskOp,
   moveTaskStatusOp,
-  moveTaskProjectOp,
   deleteTaskOp,
   createProjectOp,
   deleteProjectCascadeOp,
   evaluateOverdueTasksOp,
   restoreTaskOp,
+  bulkUpdateTasksOp,
+  bulkDeleteTasksOp,
+  bulkRestoreTasksOp,
 } from '../domain/workspaceDomain';
 import { hydrateAndValidateWorkspace } from '../domain/workspaceHydration';
+import {
+  scheduleWorkspacePersistence,
+  loadUnifiedWorkspace,
+  clearWorkspaceFromIDB,
+} from '../utils/idbStorage';
 
 interface AppContextType {
   // Collections
@@ -163,8 +164,8 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // 1. Initial State Hydration with Scoped LocalStorage & Runtime Sanitization
-  const initialWorkspace = useMemo(() => {
+  // 1. Initial State Hydration with Scoped Storage & Runtime Sanitization
+  const initialWorkspace = useMemo<WorkspaceState>(() => {
     const raw = {
       projects: getStoredItem(STORAGE_KEYS.PROJECTS, INITIAL_PROJECTS),
       tasks: getStoredItem(STORAGE_KEYS.TASKS, INITIAL_TASKS),
@@ -198,14 +199,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }).workspace;
   }, []);
 
-  const [projects, setProjects] = useState<Project[]>(() => initialWorkspace.projects);
-  const [tasks, setTasks] = useState<Task[]>(() => initialWorkspace.tasks);
-  const [members, setMembers] = useState<TeamMember[]>(() => initialWorkspace.members);
-  const [pendingInvitations, setPendingInvitations] = useState<PendingInvitation[]>(() => initialWorkspace.pendingInvitations);
-  const [documents, setDocuments] = useState<Document[]>(() => initialWorkspace.documents);
-  const [notifications, setNotifications] = useState<Notification[]>(() => initialWorkspace.notifications);
-  const [automations, setAutomations] = useState<AutomationRule[]>(() => initialWorkspace.automations);
-  const [activities, setActivities] = useState<ActivityItem[]>(() => initialWorkspace.activities);
+  // Authoritative transactional workspace state
+  const [workspace, setWorkspace] = useState<WorkspaceState>(initialWorkspace);
+
+  // Synchronous mutable ref to eliminate stale closure updates and same-tick state loss
+  const workspaceRef = useRef<WorkspaceState>(workspace);
+  useEffect(() => {
+    workspaceRef.current = workspace;
+  }, [workspace]);
 
   // Theming & Density
   const [theme, setThemeState] = useState<ThemeMode>(() =>
@@ -248,15 +249,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Toasts
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
-  // 2. Persistence Synchronization
-  useEffect(() => setStoredItem(STORAGE_KEYS.PROJECTS, projects), [projects]);
-  useEffect(() => setStoredItem(STORAGE_KEYS.TASKS, tasks), [tasks]);
-  useEffect(() => setStoredItem(STORAGE_KEYS.MEMBERS, members), [members]);
-  useEffect(() => setStoredItem(STORAGE_KEYS.INVITATIONS, pendingInvitations), [pendingInvitations]);
-  useEffect(() => setStoredItem(STORAGE_KEYS.DOCUMENTS, documents), [documents]);
-  useEffect(() => setStoredItem(STORAGE_KEYS.NOTIFICATIONS, notifications), [notifications]);
-  useEffect(() => setStoredItem(STORAGE_KEYS.AUTOMATIONS, automations), [automations]);
-  useEffect(() => setStoredItem(STORAGE_KEYS.ACTIVITIES, activities), [activities]);
+  // Async hydration from IndexedDB on startup
+  useEffect(() => {
+    let isMounted = true;
+    loadUnifiedWorkspace().then((persisted) => {
+      if (isMounted && persisted && persisted.projects && persisted.tasks) {
+        const sanitized = hydrateAndValidateWorkspace(persisted, initialWorkspace).workspace;
+        workspaceRef.current = sanitized;
+        setWorkspace(sanitized);
+      }
+    });
+    return () => {
+      isMounted = false;
+    };
+  }, [initialWorkspace]);
+
+  // Preference persistence
   useEffect(() => setStoredItem(STORAGE_KEYS.SIDEBAR, sidebarCollapsed), [sidebarCollapsed]);
   useEffect(() => setStoredItem(STORAGE_KEYS.DISMISSED_INSIGHTS, dismissedInsightIds), [dismissedInsightIds]);
   useEffect(() => setStoredItem(STORAGE_KEYS.USEFUL_INSIGHTS, usefulInsightCounts), [usefulInsightCounts]);
@@ -305,79 +313,47 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  // Recalculate derived state for affected projects & members cleanly outside state setters
-  const recomputeRelationalMetrics = useCallback(
-    (nextTasks: Task[], affectedProjectIds?: string[]) => {
-      setProjects((prevProjects) =>
-        prevProjects.map((p) => {
-          if (affectedProjectIds && !affectedProjectIds.includes(p.id)) return p;
-          const progress = calculateProjectProgress(nextTasks, p.id);
-          const health = calculateProjectHealth(nextTasks, p.id, p.health);
-          return { ...p, progress, health };
-        })
-      );
-
-      setMembers((prevMembers) =>
-        prevMembers.map((m) => {
-          const workload = calculateMemberWorkload(nextTasks, m.id);
-          return { ...m, workload };
-        })
-      );
+  /**
+   * Transactional transition engine:
+   * Synchronously mutates workspaceRef.current before scheduling React re-render,
+   * guaranteeing that rapid same-tick consecutive mutations execute against the latest state
+   * without losing data to stale closures.
+   */
+  const executeTransaction = useCallback(
+    <R,>(op: (state: WorkspaceState) => { nextState: WorkspaceState; result: R }): R => {
+      const currentState = workspaceRef.current;
+      const { nextState, result } = op(currentState);
+      workspaceRef.current = nextState;
+      setWorkspace(nextState);
+      scheduleWorkspacePersistence(nextState);
+      return result;
     },
     []
   );
 
-  const getCurrentState = useCallback((): WorkspaceState => ({
-    projects,
-    tasks,
-    members,
-    pendingInvitations,
-    documents,
-    notifications,
-    automations,
-    activities,
-  }), [projects, tasks, members, pendingInvitations, documents, notifications, automations, activities]);
-
-  const commitWorkspaceState = useCallback((next: WorkspaceState) => {
-    setProjects(next.projects);
-    setTasks(next.tasks);
-    setMembers(next.members);
-    setPendingInvitations(next.pendingInvitations);
-    setDocuments(next.documents);
-    setNotifications(next.notifications);
-    setAutomations(next.automations);
-    setActivities(next.activities);
-  }, []);
-
   // Time-based Overdue Task automation evaluation (Initialization + Tab focus)
   useEffect(() => {
     const checkOverdue = () => {
-      const currentState: WorkspaceState = {
-        projects,
-        tasks,
-        members,
-        pendingInvitations,
-        documents,
-        notifications,
-        automations,
-        activities,
-      };
-      const { state: nextState, triggeredCount } = evaluateOverdueTasksOp(currentState);
-      if (triggeredCount > 0) {
-        commitWorkspaceState(nextState);
-      }
+      executeTransaction((state) => {
+        const { state: nextState, triggeredCount } = evaluateOverdueTasksOp(state);
+        return { nextState, result: triggeredCount };
+      });
     };
 
     checkOverdue();
     window.addEventListener('focus', checkOverdue);
     return () => window.removeEventListener('focus', checkOverdue);
-  }, [projects, tasks, members, pendingInvitations, documents, notifications, automations, activities, commitWorkspaceState]);
+  }, [executeTransaction]);
 
-  // 3. Pure, Deterministic Task Actions
+  // ---------------------------------------------------------------------------
+  // Task Actions
+  // ---------------------------------------------------------------------------
   const createTask = useCallback(
     (data: Partial<Task>): Task => {
-      const { state: nextState, task: newTask } = createTaskOp(getCurrentState(), data);
-      commitWorkspaceState(nextState);
+      const newTask = executeTransaction((state) => {
+        const { state: nextState, task } = createTaskOp(state, data);
+        return { nextState, result: task };
+      });
 
       addToast({
         type: 'success',
@@ -387,14 +363,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       return newTask;
     },
-    [getCurrentState, commitWorkspaceState, addToast]
+    [executeTransaction, addToast]
   );
 
   const updateTask = useCallback(
     (id: string, updates: Partial<Task>) => {
-      const { state: nextState, task } = updateTaskOp(getCurrentState(), id, updates);
-      if (!task) return;
-      commitWorkspaceState(nextState);
+      executeTransaction((state) => {
+        const { state: nextState } = updateTaskOp(state, id, updates);
+        return { nextState, result: undefined };
+      });
 
       addToast({
         type: 'info',
@@ -403,14 +380,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         duration: 2000,
       });
     },
-    [getCurrentState, commitWorkspaceState, addToast]
+    [executeTransaction, addToast]
   );
 
   const moveTaskStatus = useCallback(
     (id: string, status: TaskStatus) => {
-      const { state: nextState, task } = moveTaskStatusOp(getCurrentState(), id, status);
+      const task = executeTransaction((state) => {
+        const { state: nextState, task } = moveTaskStatusOp(state, id, status);
+        return { nextState, result: task };
+      });
+
       if (!task) return;
-      commitWorkspaceState(nextState);
 
       if (status === 'Done') {
         confetti({
@@ -426,40 +406,42 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         });
       }
     },
-    [getCurrentState, commitWorkspaceState, addToast]
+    [executeTransaction, addToast]
   );
 
   const deleteTask = useCallback(
     (id: string) => {
-      const target = tasks.find((t) => t.id === id);
-      if (!target) return;
+      const deletedTask = executeTransaction((state) => {
+        const { state: nextState, deletedTask } = deleteTaskOp(state, id);
+        return { nextState, result: deletedTask };
+      });
 
-      const { state: nextState } = deleteTaskOp(getCurrentState(), id);
-      commitWorkspaceState(nextState);
-
+      if (!deletedTask) return;
       if (selectedTaskId === id) setSelectedTaskId(null);
 
-      // Toast with Undo
+      // Toast with Transactional Undo
       addToast({
         type: 'warning',
         title: 'Task Deleted',
-        message: `${target.key} was removed`,
+        message: `${deletedTask.key} was removed`,
         action: {
           label: 'Undo',
           onClick: () => {
-            const restoredState = restoreTaskOp(getCurrentState(), target).state;
-            commitWorkspaceState(restoredState);
+            executeTransaction((state) => {
+              const { state: restoredState } = restoreTaskOp(state, deletedTask);
+              return { nextState: restoredState, result: undefined };
+            });
           },
         },
         duration: 6000,
       });
     },
-    [tasks, getCurrentState, commitWorkspaceState, selectedTaskId, addToast]
+    [executeTransaction, selectedTaskId, addToast]
   );
 
   const duplicateTask = useCallback(
     (id: string) => {
-      const target = tasks.find((t) => t.id === id);
+      const target = workspaceRef.current.tasks.find((t) => t.id === id);
       if (!target) return;
 
       createTask({
@@ -474,50 +456,65 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         comments: [],
       });
     },
-    [tasks, createTask]
+    [createTask]
   );
 
-  const addSubtask = useCallback((taskId: string, title: string) => {
-    if (!title.trim()) return;
-    const newSub = {
-      id: generateEntityId('sub'),
-      title: title.trim(),
-      completed: false,
-    };
-    setTasks((prev) =>
-      prev.map((t) =>
-        t.id === taskId ? { ...t, subtasks: [...t.subtasks, newSub], updatedAt: new Date().toISOString() } : t
-      )
-    );
-  }, []);
+  const addSubtask = useCallback(
+    (taskId: string, title: string) => {
+      if (!title.trim()) return;
+      const newSub = {
+        id: generateEntityId('sub'),
+        title: title.trim(),
+        completed: false,
+      };
 
-  const toggleSubtask = useCallback((taskId: string, subtaskId: string) => {
-    setTasks((prev) =>
-      prev.map((t) => {
-        if (t.id !== taskId) return t;
-        return {
-          ...t,
-          subtasks: t.subtasks.map((s) =>
-            s.id === subtaskId ? { ...s, completed: !s.completed } : s
-          ),
-          updatedAt: new Date().toISOString(),
-        };
-      })
-    );
-  }, []);
+      executeTransaction((state) => {
+        const nextTasks = state.tasks.map((t) =>
+          t.id === taskId
+            ? { ...t, subtasks: [...t.subtasks, newSub], updatedAt: new Date().toISOString() }
+            : t
+        );
+        return { nextState: { ...state, tasks: nextTasks }, result: undefined };
+      });
+    },
+    [executeTransaction]
+  );
 
-  const deleteSubtask = useCallback((taskId: string, subtaskId: string) => {
-    setTasks((prev) =>
-      prev.map((t) => {
-        if (t.id !== taskId) return t;
-        return {
-          ...t,
-          subtasks: t.subtasks.filter((s) => s.id !== subtaskId),
-          updatedAt: new Date().toISOString(),
-        };
-      })
-    );
-  }, []);
+  const toggleSubtask = useCallback(
+    (taskId: string, subtaskId: string) => {
+      executeTransaction((state) => {
+        const nextTasks = state.tasks.map((t) => {
+          if (t.id !== taskId) return t;
+          return {
+            ...t,
+            subtasks: t.subtasks.map((s) =>
+              s.id === subtaskId ? { ...s, completed: !s.completed } : s
+            ),
+            updatedAt: new Date().toISOString(),
+          };
+        });
+        return { nextState: { ...state, tasks: nextTasks }, result: undefined };
+      });
+    },
+    [executeTransaction]
+  );
+
+  const deleteSubtask = useCallback(
+    (taskId: string, subtaskId: string) => {
+      executeTransaction((state) => {
+        const nextTasks = state.tasks.map((t) => {
+          if (t.id !== taskId) return t;
+          return {
+            ...t,
+            subtasks: t.subtasks.filter((s) => s.id !== subtaskId),
+            updatedAt: new Date().toISOString(),
+          };
+        });
+        return { nextState: { ...state, tasks: nextTasks }, result: undefined };
+      });
+    },
+    [executeTransaction]
+  );
 
   const addComment = useCallback(
     (taskId: string, content: string) => {
@@ -528,34 +525,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         content: content.trim(),
         timestamp: new Date().toISOString(),
       };
-      setTasks((prev) =>
-        prev.map((t) =>
+
+      executeTransaction((state) => {
+        const nextTasks = state.tasks.map((t) =>
           t.id === taskId
             ? { ...t, comments: [...t.comments, comment], updatedAt: new Date().toISOString() }
             : t
-        )
-      );
+        );
+        return { nextState: { ...state, tasks: nextTasks }, result: undefined };
+      });
+
       addToast({
         type: 'success',
         title: 'Comment posted',
         duration: 2000,
       });
     },
-    [addToast]
+    [executeTransaction, addToast]
   );
 
   const bulkUpdateTasks = useCallback(
     (ids: string[], updates: Partial<Task>) => {
-      const affectedProjectIds = new Set<string>();
-      const nextTasks = tasks.map((t) => {
-        if (!ids.includes(t.id)) return t;
-        affectedProjectIds.add(t.projectId);
-        if (updates.projectId) affectedProjectIds.add(updates.projectId);
-        return { ...t, ...updates, updatedAt: new Date().toISOString() };
+      executeTransaction((state) => {
+        const { state: nextState, updatedTasks } = bulkUpdateTasksOp(state, ids, updates);
+        return { nextState, result: updatedTasks };
       });
-
-      setTasks(nextTasks);
-      recomputeRelationalMetrics(nextTasks, Array.from(affectedProjectIds));
 
       addToast({
         type: 'info',
@@ -563,43 +557,44 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         message: `Updated ${ids.length} tasks`,
       });
     },
-    [tasks, recomputeRelationalMetrics, addToast]
+    [executeTransaction, addToast]
   );
 
   const bulkDeleteTasks = useCallback(
     (ids: string[]) => {
-      const deleted = tasks.filter((t) => ids.includes(t.id));
-      const nextTasks = tasks.filter((t) => !ids.includes(t.id));
-      const affectedProjectIds = Array.from(new Set(deleted.map((t) => t.projectId)));
-
-      setTasks(nextTasks);
-      recomputeRelationalMetrics(nextTasks, affectedProjectIds);
+      const deletedTasks = executeTransaction((state) => {
+        const { state: nextState, deletedTasks } = bulkDeleteTasksOp(state, ids);
+        return { nextState, result: deletedTasks };
+      });
 
       addToast({
         type: 'warning',
         title: 'Bulk Tasks Deleted',
-        message: `Removed ${ids.length} tasks`,
+        message: `Removed ${deletedTasks.length} tasks`,
         action: {
           label: 'Undo',
           onClick: () => {
-            setTasks((curr) => {
-              const restored = [...deleted, ...curr];
-              recomputeRelationalMetrics(restored, affectedProjectIds);
-              return restored;
+            executeTransaction((state) => {
+              const { state: nextState } = bulkRestoreTasksOp(state, deletedTasks);
+              return { nextState, result: undefined };
             });
           },
         },
         duration: 6000,
       });
     },
-    [tasks, recomputeRelationalMetrics, addToast]
+    [executeTransaction, addToast]
   );
 
-  // 4. Project Actions with Cascading Relational Cleanup
+  // ---------------------------------------------------------------------------
+  // Project Actions
+  // ---------------------------------------------------------------------------
   const createProject = useCallback(
     (data: Partial<Project>): Project => {
-      const { state: nextState, project: newProject } = createProjectOp(getCurrentState(), data);
-      commitWorkspaceState(nextState);
+      const newProject = executeTransaction((state) => {
+        const { state: nextState, project } = createProjectOp(state, data);
+        return { nextState, result: project };
+      });
 
       addToast({
         type: 'success',
@@ -609,39 +604,49 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       return newProject;
     },
-    [getCurrentState, commitWorkspaceState, addToast]
+    [executeTransaction, addToast]
   );
 
   const updateProject = useCallback(
     (id: string, updates: Partial<Project>) => {
-      setProjects((prev) => prev.map((p) => (p.id === id ? { ...p, ...updates } : p)));
+      executeTransaction((state) => {
+        const nextProjects = state.projects.map((p) =>
+          p.id === id ? { ...p, ...updates } : p
+        );
+        return { nextState: { ...state, projects: nextProjects }, result: undefined };
+      });
+
       addToast({
         type: 'info',
         title: 'Project Updated',
         duration: 2000,
       });
     },
-    [addToast]
+    [executeTransaction, addToast]
   );
 
   const deleteProject = useCallback(
     (id: string) => {
-      const { state: nextState, deletedProject } = deleteProjectCascadeOp(getCurrentState(), id);
-      if (!deletedProject) return;
-      commitWorkspaceState(nextState);
+      const deleted = executeTransaction((state) => {
+        const { state: nextState, deletedProject } = deleteProjectCascadeOp(state, id);
+        return { nextState, result: deletedProject };
+      });
 
+      if (!deleted) return;
       if (activeProjectId === id) setActiveProjectId(null);
 
       addToast({
         type: 'warning',
         title: 'Project & Associated Records Deleted',
-        message: `${deletedProject.name} was cleanly removed.`,
+        message: `${deleted.name} was cleanly removed.`,
       });
     },
-    [getCurrentState, commitWorkspaceState, activeProjectId, addToast]
+    [executeTransaction, activeProjectId, addToast]
   );
 
-  // 5. Team Invitation Actions (Honest Local Simulation)
+  // ---------------------------------------------------------------------------
+  // Invitation Actions
+  // ---------------------------------------------------------------------------
   const createInvitation = useCallback(
     (invitationData: Omit<PendingInvitation, 'id' | 'invitedAt' | 'status'>): PendingInvitation => {
       const newInv: PendingInvitation = {
@@ -650,7 +655,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         invitedAt: 'Just now',
         status: 'Pending',
       };
-      setPendingInvitations((prev) => [newInv, ...prev]);
+
+      executeTransaction((state) => ({
+        nextState: { ...state, pendingInvitations: [newInv, ...state.pendingInvitations] },
+        result: undefined,
+      }));
 
       addToast({
         type: 'success',
@@ -660,30 +669,40 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       return newInv;
     },
-    [addToast]
+    [executeTransaction, addToast]
   );
 
   const cancelInvitation = useCallback(
     (id: string) => {
-      setPendingInvitations((prev) => prev.filter((i) => i.id !== id));
+      executeTransaction((state) => ({
+        nextState: {
+          ...state,
+          pendingInvitations: state.pendingInvitations.filter((i) => i.id !== id),
+        },
+        result: undefined,
+      }));
+
       addToast({
         type: 'info',
         title: 'Invitation Revoked',
         duration: 2000,
       });
     },
-    [addToast]
+    [executeTransaction, addToast]
   );
 
-  // 6. Document Actions
+  // ---------------------------------------------------------------------------
+  // Document Actions
+  // ---------------------------------------------------------------------------
   const createDocument = useCallback(
     (data: Partial<Document>): Document => {
+      const defaultProjectId = workspaceRef.current.projects[0]?.id || 'proj-1';
       const newDoc: Document = {
         id: generateEntityId('doc'),
         title: data.title?.trim() || 'Untitled Specification',
         type: data.type || 'Spec',
-        projectId: data.projectId || projects[0]?.id || 'proj-1',
-        authorId: 'user-1',
+        projectId: data.projectId || defaultProjectId,
+        authorId: data.authorId || 'user-1',
         lastEdited: new Date().toISOString(),
         content:
           data.content?.trim() ||
@@ -691,7 +710,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         isFavorite: false,
         tags: data.tags || ['General'],
       };
-      setDocuments((prev) => [newDoc, ...prev]);
+
+      executeTransaction((state) => ({
+        nextState: { ...state, documents: [newDoc, ...state.documents] },
+        result: undefined,
+      }));
+
       addToast({
         type: 'success',
         title: 'Document Created',
@@ -699,73 +723,136 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
       return newDoc;
     },
-    [projects, addToast]
+    [executeTransaction, addToast]
   );
 
-  const updateDocument = useCallback((id: string, updates: Partial<Document>) => {
-    setDocuments((prev) =>
-      prev.map((d) =>
-        d.id === id ? { ...d, ...updates, lastEdited: new Date().toISOString() } : d
-      )
-    );
-  }, []);
+  const updateDocument = useCallback(
+    (id: string, updates: Partial<Document>) => {
+      executeTransaction((state) => ({
+        nextState: {
+          ...state,
+          documents: state.documents.map((d) =>
+            d.id === id ? { ...d, ...updates, lastEdited: new Date().toISOString() } : d
+          ),
+        },
+        result: undefined,
+      }));
+    },
+    [executeTransaction]
+  );
 
   const deleteDocument = useCallback(
     (id: string) => {
-      setDocuments((prev) => prev.filter((d) => d.id !== id));
+      executeTransaction((state) => ({
+        nextState: {
+          ...state,
+          documents: state.documents.filter((d) => d.id !== id),
+        },
+        result: undefined,
+      }));
+
       if (selectedDocId === id) setSelectedDocId(null);
       addToast({
         type: 'info',
         title: 'Document Deleted',
       });
     },
-    [selectedDocId, addToast]
+    [executeTransaction, selectedDocId, addToast]
   );
 
-  const toggleFavoriteDocument = useCallback((id: string) => {
-    setDocuments((prev) => prev.map((d) => (d.id === id ? { ...d, isFavorite: !d.isFavorite } : d)));
-  }, []);
+  const toggleFavoriteDocument = useCallback(
+    (id: string) => {
+      executeTransaction((state) => ({
+        nextState: {
+          ...state,
+          documents: state.documents.map((d) =>
+            d.id === id ? { ...d, isFavorite: !d.isFavorite } : d
+          ),
+        },
+        result: undefined,
+      }));
+    },
+    [executeTransaction]
+  );
 
-  // 7. Notification Actions
-  const markNotificationRead = useCallback((id: string) => {
-    setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
-  }, []);
+  // ---------------------------------------------------------------------------
+  // Notification Actions
+  // ---------------------------------------------------------------------------
+  const markNotificationRead = useCallback(
+    (id: string) => {
+      executeTransaction((state) => ({
+        nextState: {
+          ...state,
+          notifications: state.notifications.map((n) => (n.id === id ? { ...n, read: true } : n)),
+        },
+        result: undefined,
+      }));
+    },
+    [executeTransaction]
+  );
 
   const markAllNotificationsRead = useCallback(() => {
-    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    executeTransaction((state) => ({
+      nextState: {
+        ...state,
+        notifications: state.notifications.map((n) => ({ ...n, read: true })),
+      },
+      result: undefined,
+    }));
+
     addToast({
       type: 'info',
       title: 'All notifications marked as read',
       duration: 2000,
     });
-  }, [addToast]);
+  }, [executeTransaction, addToast]);
 
-  const deleteNotification = useCallback((id: string) => {
-    setNotifications((prev) => prev.filter((n) => n.id !== id));
-  }, []);
+  const deleteNotification = useCallback(
+    (id: string) => {
+      executeTransaction((state) => ({
+        nextState: {
+          ...state,
+          notifications: state.notifications.filter((n) => n.id !== id),
+        },
+        result: undefined,
+      }));
+    },
+    [executeTransaction]
+  );
 
   const unreadNotificationsCount = useMemo(() => {
-    return notifications.filter((n) => !n.read).length;
-  }, [notifications]);
+    return workspace.notifications.filter((n) => !n.read).length;
+  }, [workspace.notifications]);
 
-  // 8. Automations Actions
+  // ---------------------------------------------------------------------------
+  // Automation Actions
+  // ---------------------------------------------------------------------------
   const toggleAutomationRule = useCallback(
     (id: string) => {
-      setAutomations((prev) =>
-        prev.map((r) => {
+      executeTransaction((state) => {
+        let ruleName = '';
+        let isNowEnabled = false;
+
+        const nextAutomations = state.automations.map((r) => {
           if (r.id !== id) return r;
-          const enabled = !r.enabled;
+          isNowEnabled = !r.enabled;
+          ruleName = r.name;
+          return { ...r, enabled: isNowEnabled };
+        });
+
+        if (ruleName) {
           addToast({
             type: 'info',
-            title: `Rule ${enabled ? 'Enabled' : 'Disabled'}`,
-            message: r.name,
+            title: `Rule ${isNowEnabled ? 'Enabled' : 'Disabled'}`,
+            message: ruleName,
             duration: 2000,
           });
-          return { ...r, enabled };
-        })
-      );
+        }
+
+        return { nextState: { ...state, automations: nextAutomations }, result: undefined };
+      });
     },
-    [addToast]
+    [executeTransaction, addToast]
   );
 
   const createAutomationRule = useCallback(
@@ -780,59 +867,96 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         action: data.action || 'Set Priority = Urgent & Send Notification',
         lastTriggered: 'Never',
       };
-      setAutomations((prev) => [newRule, ...prev]);
+
+      executeTransaction((state) => ({
+        nextState: { ...state, automations: [newRule, ...state.automations] },
+        result: undefined,
+      }));
+
       addToast({
         type: 'success',
         title: 'Automation Rule Created',
         message: newRule.name,
       });
     },
-    [addToast]
+    [executeTransaction, addToast]
   );
 
   const deleteAutomationRule = useCallback(
     (id: string) => {
-      setAutomations((prev) => prev.filter((r) => r.id !== id));
+      executeTransaction((state) => ({
+        nextState: {
+          ...state,
+          automations: state.automations.filter((r) => r.id !== id),
+        },
+        result: undefined,
+      }));
+
       addToast({
         type: 'info',
         title: 'Rule Removed',
       });
     },
-    [addToast]
+    [executeTransaction, addToast]
   );
 
   const duplicateAutomationRule = useCallback(
     (id: string) => {
-      const rule = automations.find((r) => r.id === id);
+      const rule = workspaceRef.current.automations.find((r) => r.id === id);
       if (!rule) return;
       createAutomationRule({
         ...rule,
         name: `${rule.name} (Copy)`,
       });
     },
-    [automations, createAutomationRule]
+    [createAutomationRule]
   );
 
-  // 9. Dynamic AI Insights
+  // ---------------------------------------------------------------------------
+  // High-Performance Derived AI Insights (O(T) Single Pass)
+  // ---------------------------------------------------------------------------
   const insights: AIInsight[] = useMemo(() => {
+    const { projects, tasks, members } = workspace;
     const generated: AIInsight[] = [];
 
-    // Project delivery risk assessment
-    projects.forEach((p) => {
-      const pTasks = tasks.filter((t) => t.projectId === p.id);
-      const urgentUnresolved = pTasks.filter(
-        (t) => t.priority === 'Urgent' && t.status !== 'Done'
-      );
-      const overdueTasks = pTasks.filter(
-        (t) => t.status !== 'Done' && isTaskOverdue(t.dueDate, t.status)
-      );
+    // Pre-aggregate task stats in a single linear pass across all tasks
+    const projectRiskMap = new Map<string, { urgentUnresolved: number; overdueCount: number }>();
+    const memberActiveMap = new Map<string, number>();
+    let doneCount = 0;
 
-      if (urgentUnresolved.length >= 2 || overdueTasks.length >= 2) {
+    for (let i = 0; i < tasks.length; i++) {
+      const t = tasks[i];
+      if (t.status === 'Done') {
+        doneCount++;
+        continue;
+      }
+
+      // Tally active member count
+      if (t.assigneeId && t.assigneeId !== 'unassigned') {
+        memberActiveMap.set(t.assigneeId, (memberActiveMap.get(t.assigneeId) || 0) + 1);
+      }
+
+      // Tally project risk stats
+      let pStats = projectRiskMap.get(t.projectId);
+      if (!pStats) {
+        pStats = { urgentUnresolved: 0, overdueCount: 0 };
+        projectRiskMap.set(t.projectId, pStats);
+      }
+      if (t.priority === 'Urgent') pStats.urgentUnresolved++;
+      if (isTaskOverdue(t.dueDate, t.status)) pStats.overdueCount++;
+    }
+
+    // 1. Project delivery risk assessment (O(P))
+    for (let i = 0; i < projects.length; i++) {
+      const p = projects[i];
+      const pStats = projectRiskMap.get(p.id) || { urgentUnresolved: 0, overdueCount: 0 };
+
+      if (pStats.urgentUnresolved >= 2 || pStats.overdueCount >= 2) {
         generated.push({
           id: `insight_proj_${p.id}`,
           type: 'risk',
           title: `Delivery Risk in ${p.name}`,
-          summary: `${p.name} has ${urgentUnresolved.length} urgent tasks and ${overdueTasks.length} overdue milestones.`,
+          summary: `${p.name} has ${pStats.urgentUnresolved} urgent tasks and ${pStats.overdueCount} overdue milestones.`,
           detail: `Critical path analysis indicates schedule slippage toward target deadline (${p.deadline}). Consider re-allocating engineering capacity from on-track sprints.`,
           impact: 'High',
           usefulCount: usefulInsightCounts[`insight_proj_${p.id}`] || 14,
@@ -841,19 +965,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           relatedProjectId: p.id,
         });
       }
-    });
+    }
 
-    // Engineer capacity saturation
-    members.forEach((m) => {
-      const activeTasks = tasks.filter(
-        (t) => t.assigneeId === m.id && t.status !== 'Done'
-      );
-      if (activeTasks.length >= 5 || m.workload > 80) {
+    // 2. Engineer capacity saturation (O(M))
+    for (let i = 0; i < members.length; i++) {
+      const m = members[i];
+      const activeCount = memberActiveMap.get(m.id) || 0;
+      if (activeCount >= 5 || m.workload > 80) {
         generated.push({
           id: `insight_workload_${m.id}`,
           type: 'workload',
           title: `Capacity Saturation: ${m.name}`,
-          summary: `${m.name} has ${activeTasks.length} active work items (${m.workload}% load), exceeding recommended sustainability thresholds.`,
+          summary: `${m.name} has ${activeCount} active work items (${m.workload}% load), exceeding recommended sustainability thresholds.`,
           detail: `Load skew is 38% above team median. High workload increases code review turnaround latency. Consider task rebalancing.`,
           impact: 'Medium',
           usefulCount: usefulInsightCounts[`insight_workload_${m.id}`] || 9,
@@ -862,10 +985,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           relatedMemberId: m.id,
         });
       }
-    });
+    }
 
-    // Throughput acceleration
-    const doneCount = tasks.filter((t) => t.status === 'Done').length;
+    // 3. Throughput acceleration
     generated.push({
       id: 'insight_velocity_aggregate',
       type: 'velocity',
@@ -879,7 +1001,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
 
     return generated;
-  }, [projects, tasks, members, dismissedInsightIds, usefulInsightCounts]);
+  }, [workspace, dismissedInsightIds, usefulInsightCounts]);
 
   const dismissInsight = useCallback(
     (id: string) => {
@@ -909,19 +1031,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [addToast]
   );
 
-  // 10. Scoped Non-Destructive Reset
+  // ---------------------------------------------------------------------------
+  // Scoped Non-Destructive Reset
+  // ---------------------------------------------------------------------------
   const resetDemoData = useCallback(() => {
     // Only clears keys prefixed with 'nexus_'!
     clearNexusStorage();
+    clearWorkspaceFromIDB();
 
-    setProjects(INITIAL_PROJECTS);
-    setTasks(INITIAL_TASKS);
-    setMembers(INITIAL_MEMBERS);
-    setPendingInvitations([]);
-    setDocuments(INITIAL_DOCUMENTS);
-    setNotifications(INITIAL_NOTIFICATIONS);
-    setAutomations(INITIAL_AUTOMATIONS);
-    setActivities(INITIAL_ACTIVITIES);
+    workspaceRef.current = initialWorkspace;
+    setWorkspace(initialWorkspace);
     setDismissedInsightIds([]);
     setUsefulInsightCounts({});
 
@@ -930,18 +1049,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       title: 'Workspace Reset Complete',
       message: 'Restored original demo data without touching other local storage.',
     });
-  }, [addToast]);
+  }, [initialWorkspace, addToast]);
 
-  const value = useMemo(
+  const value = useMemo<AppContextType>(
     () => ({
-      projects,
-      tasks,
-      members,
-      pendingInvitations,
-      documents,
-      notifications,
-      automations,
-      activities,
+      projects: workspace.projects,
+      tasks: workspace.tasks,
+      members: workspace.members,
+      pendingInvitations: workspace.pendingInvitations,
+      documents: workspace.documents,
+      notifications: workspace.notifications,
+      automations: workspace.automations,
+      activities: workspace.activities,
       insights,
 
       activeView,
@@ -1025,14 +1144,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       resetDemoData,
     }),
     [
-      projects,
-      tasks,
-      members,
-      pendingInvitations,
-      documents,
-      notifications,
-      automations,
-      activities,
+      workspace,
       insights,
       activeView,
       activeProjectId,

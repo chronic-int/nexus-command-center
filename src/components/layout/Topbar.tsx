@@ -59,26 +59,63 @@ export const Topbar: React.FC = () => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Filtered search results
-  const q = searchQuery.toLowerCase().trim();
+  // Debounced search query to prevent typing latency under 10k items
+  const [debouncedQuery, setDebouncedQuery] = useState('');
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedQuery(searchQuery.toLowerCase().trim());
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  // Filtered search results with early exit caps
   const searchResults = React.useMemo(() => {
-    if (!q) return null;
+    if (!debouncedQuery) return null;
+    const q = debouncedQuery;
 
-    const matchedProjects = projects.filter(
-      p => p.name.toLowerCase().includes(q) || p.key.toLowerCase().includes(q) || p.description.toLowerCase().includes(q)
-    );
+    const matchedProjects = [];
+    for (let i = 0; i < projects.length && matchedProjects.length < 8; i++) {
+      const p = projects[i];
+      if (
+        p.name.toLowerCase().includes(q) ||
+        p.key.toLowerCase().includes(q) ||
+        p.description.toLowerCase().includes(q)
+      ) {
+        matchedProjects.push(p);
+      }
+    }
 
-    const matchedTasks = tasks.filter(
-      t => t.title.toLowerCase().includes(q) || t.key.toLowerCase().includes(q) || t.description.toLowerCase().includes(q)
-    );
+    const matchedTasks = [];
+    for (let i = 0; i < tasks.length && matchedTasks.length < 10; i++) {
+      const t = tasks[i];
+      if (
+        t.title.toLowerCase().includes(q) ||
+        t.key.toLowerCase().includes(q) ||
+        t.description.toLowerCase().includes(q)
+      ) {
+        matchedTasks.push(t);
+      }
+    }
 
-    const matchedMembers = members.filter(
-      m => m.name.toLowerCase().includes(q) || m.role.toLowerCase().includes(q) || m.email.toLowerCase().includes(q)
-    );
+    const matchedMembers = [];
+    for (let i = 0; i < members.length && matchedMembers.length < 6; i++) {
+      const m = members[i];
+      if (
+        m.name.toLowerCase().includes(q) ||
+        m.role.toLowerCase().includes(q) ||
+        m.email.toLowerCase().includes(q)
+      ) {
+        matchedMembers.push(m);
+      }
+    }
 
-    const matchedDocs = documents.filter(
-      d => d.title.toLowerCase().includes(q) || d.content.toLowerCase().includes(q)
-    );
+    const matchedDocs = [];
+    for (let i = 0; i < documents.length && matchedDocs.length < 6; i++) {
+      const d = documents[i];
+      if (d.title.toLowerCase().includes(q) || d.content.toLowerCase().includes(q)) {
+        matchedDocs.push(d);
+      }
+    }
 
     return {
       projects: matchedProjects,
@@ -87,7 +124,7 @@ export const Topbar: React.FC = () => {
       documents: matchedDocs,
       total: matchedProjects.length + matchedTasks.length + matchedMembers.length + matchedDocs.length,
     };
-  }, [q, projects, tasks, members, documents]);
+  }, [debouncedQuery, projects, tasks, members, documents]);
 
   // Breadcrumbs text
   const currentProject = projects.find(p => p.id === activeProjectId);

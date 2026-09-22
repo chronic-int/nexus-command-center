@@ -15,11 +15,15 @@ import {
   calculateProjectProgress,
   calculateProjectHealth,
   calculateMemberWorkload,
+  recomputeWorkspaceMetricsFast,
 } from '../utils/metrics';
 import {
   processWorkspaceAutomation,
   AutomationEvent,
 } from '../utils/automationEngine';
+
+export const MAX_ACTIVITIES_RETAINED = 5000;
+export const MAX_NOTIFICATIONS_RETAINED = 2000;
 
 export interface WorkspaceState {
   projects: Project[];
@@ -34,31 +38,38 @@ export interface WorkspaceState {
 
 /**
  * Recomputes derived project progress, project health, and member workloads.
- * Returns a new immutably updated WorkspaceState.
+ * Uses O(affected) fast incremental recomputation or O(T) single-pass linear scans.
+ * Fully backwards-compatible with existing callers.
  */
 export function recomputeWorkspaceMetrics(
   state: WorkspaceState,
   affectedProjectIds?: string[],
+  affectedMemberIdsOrRefDate?: string[] | Date | string,
   referenceDate?: Date | string
 ): WorkspaceState {
-  const updatedProjects = state.projects.map((p) => {
-    if (affectedProjectIds && !affectedProjectIds.includes(p.id)) {
-      return p;
-    }
-    const progress = calculateProjectProgress(state.tasks, p.id);
-    const health = calculateProjectHealth(state.tasks, p.id, p.health, referenceDate);
-    return { ...p, progress, health };
-  });
+  let memberIds: string[] | undefined;
+  let refDate: Date | string | undefined = referenceDate;
 
-  const updatedMembers = state.members.map((m) => {
-    const workload = calculateMemberWorkload(state.tasks, m.id);
-    return { ...m, workload };
-  });
+  if (typeof affectedMemberIdsOrRefDate === 'string' || affectedMemberIdsOrRefDate instanceof Date) {
+    refDate = affectedMemberIdsOrRefDate;
+    memberIds = undefined;
+  } else if (Array.isArray(affectedMemberIdsOrRefDate)) {
+    memberIds = affectedMemberIdsOrRefDate;
+  }
+
+  const { projects, members } = recomputeWorkspaceMetricsFast(
+    state.tasks,
+    state.projects,
+    state.members,
+    affectedProjectIds,
+    memberIds,
+    refDate
+  );
 
   return {
     ...state,
-    projects: updatedProjects,
-    members: updatedMembers,
+    projects,
+    members,
   };
 }
 
@@ -93,13 +104,13 @@ export function applyAutomationEvent(
     ...state,
     tasks: result.updatedTasks,
     projects: result.updatedProjects,
-    notifications: [...result.newNotifications, ...state.notifications],
-    activities: [...result.newActivities, ...state.activities],
+    notifications: [...result.newNotifications, ...state.notifications].slice(0, MAX_NOTIFICATIONS_RETAINED),
+    activities: [...result.newActivities, ...state.activities].slice(0, MAX_ACTIVITIES_RETAINED),
     automations: updatedAutomations,
   };
 
   // Recompute relational metrics if tasks or projects changed
-  nextState = recomputeWorkspaceMetrics(nextState, undefined, referenceDate);
+  nextState = recomputeWorkspaceMetrics(nextState, undefined, undefined, referenceDate);
   return nextState;
 }
 
@@ -151,10 +162,15 @@ export function createTaskOp(
   let nextState: WorkspaceState = {
     ...state,
     tasks: [newTask, ...state.tasks],
-    activities: [newActivity, ...state.activities],
+    activities: [newActivity, ...state.activities].slice(0, MAX_ACTIVITIES_RETAINED),
   };
 
-  nextState = recomputeWorkspaceMetrics(nextState, [newTask.projectId], referenceDate);
+  nextState = recomputeWorkspaceMetrics(
+    nextState,
+    [newTask.projectId],
+    newTask.assigneeId ? [newTask.assigneeId] : undefined,
+    referenceDate
+  );
 
   // Trigger automation on newly composed state
   nextState = applyAutomationEvent(nextState, { type: 'TASK_CREATED', task: newTask }, referenceDate);
@@ -191,12 +207,18 @@ export function updateTaskOp(
     affectedProjectIds.push(updatedTask.projectId);
   }
 
+  const affectedMemberIds: string[] = [];
+  if (previousTask.assigneeId) affectedMemberIds.push(previousTask.assigneeId);
+  if (updatedTask.assigneeId && updatedTask.assigneeId !== previousTask.assigneeId) {
+    affectedMemberIds.push(updatedTask.assigneeId);
+  }
+
   let nextState: WorkspaceState = {
     ...state,
     tasks: nextTasks,
   };
 
-  nextState = recomputeWorkspaceMetrics(nextState, affectedProjectIds, referenceDate);
+  nextState = recomputeWorkspaceMetrics(nextState, affectedProjectIds, affectedMemberIds, referenceDate);
 
   // Check automation triggers
   if (updates.priority && updates.priority !== previousTask.priority) {
@@ -254,10 +276,15 @@ export function moveTaskStatusOp(
   let nextState: WorkspaceState = {
     ...state,
     tasks: nextTasks,
-    activities: [newActivity, ...state.activities],
+    activities: [newActivity, ...state.activities].slice(0, MAX_ACTIVITIES_RETAINED),
   };
 
-  nextState = recomputeWorkspaceMetrics(nextState, [updatedTask.projectId], referenceDate);
+  nextState = recomputeWorkspaceMetrics(
+    nextState,
+    [updatedTask.projectId],
+    updatedTask.assigneeId ? [updatedTask.assigneeId] : undefined,
+    referenceDate
+  );
 
   // Trigger automation
   nextState = applyAutomationEvent(
@@ -309,13 +336,14 @@ export function moveTaskProjectOp(
   let nextState: WorkspaceState = {
     ...state,
     tasks: nextTasks,
-    activities: [newActivity, ...state.activities],
+    activities: [newActivity, ...state.activities].slice(0, MAX_ACTIVITIES_RETAINED),
   };
 
   // Both previous and new project must have metrics recalculated
   nextState = recomputeWorkspaceMetrics(
     nextState,
     [previousTask.projectId, newProjectId],
+    updatedTask.assigneeId ? [updatedTask.assigneeId] : undefined,
     referenceDate
   );
 
@@ -345,7 +373,12 @@ export function deleteTaskOp(
     notifications: nextNotifications,
   };
 
-  nextState = recomputeWorkspaceMetrics(nextState, [target.projectId], referenceDate);
+  nextState = recomputeWorkspaceMetrics(
+    nextState,
+    [target.projectId],
+    target.assigneeId ? [target.assigneeId] : undefined,
+    referenceDate
+  );
   return { state: nextState, deletedTask: target };
 }
 
@@ -401,11 +434,256 @@ export function restoreTaskOp(
   let nextState: WorkspaceState = {
     ...state,
     tasks: [restoredTask, ...state.tasks],
-    activities: [restorationActivity, ...state.activities],
+    activities: [restorationActivity, ...state.activities].slice(0, MAX_ACTIVITIES_RETAINED),
   };
 
-  nextState = recomputeWorkspaceMetrics(nextState, [restoredTask.projectId], referenceDate);
+  nextState = recomputeWorkspaceMetrics(
+    nextState,
+    [restoredTask.projectId],
+    restoredTask.assigneeId ? [restoredTask.assigneeId] : undefined,
+    referenceDate
+  );
   return { state: nextState, restoredTask };
+}
+
+/**
+ * Pure domain operation: Bulk Update Tasks
+ */
+export function bulkUpdateTasksOp(
+  state: WorkspaceState,
+  taskIds: string[],
+  updates: Partial<Task>,
+  referenceDate?: Date | string
+): { state: WorkspaceState; updatedTasks: Task[] } {
+  if (taskIds.length === 0) {
+    return { state, updatedTasks: [] };
+  }
+
+  const targetIdSet = new Set(taskIds);
+  const now = referenceDate ? new Date(referenceDate).toISOString() : new Date().toISOString();
+  const affectedProjectIds = new Set<string>();
+  const affectedMemberIds = new Set<string>();
+  const updatedTasks: Task[] = [];
+  const statusChangedPairs: Array<{ updated: Task; previous: Task }> = [];
+  const priorityChangedPairs: Array<{ updated: Task; previous: Task }> = [];
+
+  const nextTasks = state.tasks.map((task) => {
+    if (!targetIdSet.has(task.id)) {
+      return task;
+    }
+
+    const updatedTask: Task = {
+      ...task,
+      ...updates,
+      updatedAt: now,
+    };
+
+    affectedProjectIds.add(task.projectId);
+    if (updatedTask.projectId !== task.projectId) {
+      affectedProjectIds.add(updatedTask.projectId);
+    }
+    if (task.assigneeId) affectedMemberIds.add(task.assigneeId);
+    if (updatedTask.assigneeId) affectedMemberIds.add(updatedTask.assigneeId);
+
+    if (updates.status && updates.status !== task.status) {
+      statusChangedPairs.push({ updated: updatedTask, previous: task });
+    }
+    if (updates.priority && updates.priority !== task.priority) {
+      priorityChangedPairs.push({ updated: updatedTask, previous: task });
+    }
+
+    updatedTasks.push(updatedTask);
+    return updatedTask;
+  });
+
+  if (updatedTasks.length === 0) {
+    return { state, updatedTasks: [] };
+  }
+
+  const activity: ActivityItem = {
+    id: generateEntityId('act'),
+    userId: 'user-1',
+    action: `bulk updated ${updatedTasks.length} tasks`,
+    targetName: `${updatedTasks.length} tasks`,
+    targetType: 'task',
+    targetId: updatedTasks[0]?.id || 'bulk-task',
+    timestamp: 'Just now',
+  };
+
+  let nextState: WorkspaceState = {
+    ...state,
+    tasks: nextTasks,
+    activities: [activity, ...state.activities].slice(0, MAX_ACTIVITIES_RETAINED),
+  };
+
+  // Recompute metrics for affected projects & members
+  nextState = recomputeWorkspaceMetrics(
+    nextState,
+    Array.from(affectedProjectIds),
+    Array.from(affectedMemberIds),
+    referenceDate
+  );
+
+  // Apply automations for status / priority changes
+  for (const pair of statusChangedPairs) {
+    nextState = applyAutomationEvent(
+      nextState,
+      { type: 'STATUS_CHANGED', task: pair.updated, previousTask: pair.previous },
+      referenceDate
+    );
+  }
+  for (const pair of priorityChangedPairs) {
+    nextState = applyAutomationEvent(
+      nextState,
+      { type: 'PRIORITY_CHANGED', task: pair.updated, previousTask: pair.previous },
+      referenceDate
+    );
+  }
+
+  return { state: nextState, updatedTasks };
+}
+
+/**
+ * Pure domain operation: Bulk Delete Tasks with Cascading Notification Cleanup
+ */
+export function bulkDeleteTasksOp(
+  state: WorkspaceState,
+  taskIds: string[],
+  referenceDate?: Date | string
+): { state: WorkspaceState; deletedTasks: Task[] } {
+  if (taskIds.length === 0) {
+    return { state, deletedTasks: [] };
+  }
+
+  const targetIdSet = new Set(taskIds);
+  const deletedTasks: Task[] = [];
+  const affectedProjectIds = new Set<string>();
+  const affectedMemberIds = new Set<string>();
+
+  const nextTasks: Task[] = [];
+  for (let i = 0; i < state.tasks.length; i++) {
+    const t = state.tasks[i];
+    if (targetIdSet.has(t.id)) {
+      deletedTasks.push(t);
+      affectedProjectIds.add(t.projectId);
+      if (t.assigneeId) affectedMemberIds.add(t.assigneeId);
+    } else {
+      nextTasks.push(t);
+    }
+  }
+
+  if (deletedTasks.length === 0) {
+    return { state, deletedTasks: [] };
+  }
+
+  const nextNotifications = state.notifications.filter(
+    (n) => !n.targetId || !targetIdSet.has(n.targetId)
+  );
+
+  const activity: ActivityItem = {
+    id: generateEntityId('act'),
+    userId: 'user-1',
+    action: `bulk deleted ${deletedTasks.length} tasks`,
+    targetName: `${deletedTasks.length} tasks`,
+    targetType: 'task',
+    targetId: deletedTasks[0]?.id || 'bulk-task',
+    timestamp: 'Just now',
+  };
+
+  let nextState: WorkspaceState = {
+    ...state,
+    tasks: nextTasks,
+    notifications: nextNotifications,
+    activities: [activity, ...state.activities].slice(0, MAX_ACTIVITIES_RETAINED),
+  };
+
+  nextState = recomputeWorkspaceMetrics(
+    nextState,
+    Array.from(affectedProjectIds),
+    Array.from(affectedMemberIds),
+    referenceDate
+  );
+
+  return { state: nextState, deletedTasks };
+}
+
+/**
+ * Pure domain operation: Bulk Restore Tasks
+ */
+export function bulkRestoreTasksOp(
+  state: WorkspaceState,
+  tasksToRestore: Task[],
+  referenceDate?: Date | string
+): { state: WorkspaceState; restoredTasks: Task[] } {
+  if (tasksToRestore.length === 0) {
+    return { state, restoredTasks: [] };
+  }
+
+  const existingIds = new Set(state.tasks.map((t) => t.id));
+  const existingKeys = new Set(state.tasks.map((t) => t.key));
+  const validProjectIds = new Set(state.projects.map((p) => p.id));
+  const fallbackProjectId = state.projects[0]?.id || 'proj-1';
+  const projectMap = new Map(state.projects.map((p) => [p.id, p]));
+
+  const restoredTasks: Task[] = [];
+  const affectedProjectIds = new Set<string>();
+  const affectedMemberIds = new Set<string>();
+
+  for (const task of tasksToRestore) {
+    if (existingIds.has(task.id)) continue;
+
+    let targetProjectId = task.projectId;
+    if (!validProjectIds.has(targetProjectId)) {
+      targetProjectId = fallbackProjectId;
+    }
+
+    let targetKey = task.key;
+    if (existingKeys.has(targetKey)) {
+      const p = projectMap.get(targetProjectId);
+      const pKey = p?.key || 'NEX';
+      targetKey = getNextTaskKey(pKey, [...state.tasks, ...restoredTasks]);
+    }
+    existingKeys.add(targetKey);
+
+    const restored: Task = {
+      ...task,
+      projectId: targetProjectId,
+      key: targetKey,
+    };
+
+    restoredTasks.push(restored);
+    affectedProjectIds.add(restored.projectId);
+    if (restored.assigneeId) affectedMemberIds.add(restored.assigneeId);
+  }
+
+  if (restoredTasks.length === 0) {
+    return { state, restoredTasks: [] };
+  }
+
+  const activity: ActivityItem = {
+    id: generateEntityId('act'),
+    userId: 'user-1',
+    action: `restored ${restoredTasks.length} deleted tasks`,
+    targetName: `${restoredTasks.length} tasks`,
+    targetType: 'task',
+    targetId: restoredTasks[0]?.id || 'bulk-task',
+    timestamp: 'Just now',
+  };
+
+  let nextState: WorkspaceState = {
+    ...state,
+    tasks: [...restoredTasks, ...state.tasks],
+    activities: [activity, ...state.activities].slice(0, MAX_ACTIVITIES_RETAINED),
+  };
+
+  nextState = recomputeWorkspaceMetrics(
+    nextState,
+    Array.from(affectedProjectIds),
+    Array.from(affectedMemberIds),
+    referenceDate
+  );
+
+  return { state: nextState, restoredTasks };
 }
 
 /**
@@ -449,7 +727,7 @@ export function createProjectOp(
   const nextState: WorkspaceState = {
     ...state,
     projects: [newProject, ...state.projects],
-    activities: [newActivity, ...state.activities],
+    activities: [newActivity, ...state.activities].slice(0, MAX_ACTIVITIES_RETAINED),
   };
 
   return { state: nextState, project: newProject };
@@ -492,53 +770,101 @@ export function deleteProjectCascadeOp(
     projects: nextProjects,
     tasks: nextTasks,
     documents: nextDocuments,
-    notifications: nextNotifications,
-    activities: nextActivities,
+    notifications: nextNotifications.slice(0, MAX_NOTIFICATIONS_RETAINED),
+    activities: nextActivities.slice(0, MAX_ACTIVITIES_RETAINED),
   };
 
-  // Recompute member workloads since assigned tasks were removed
-  nextState = recomputeWorkspaceMetrics(nextState, undefined, referenceDate);
+  // Recompute member workloads since assigned tasks were removed (full fast O(T) pass)
+  nextState = recomputeWorkspaceMetrics(nextState, undefined, undefined, referenceDate);
   return { state: nextState, deletedProject: target };
 }
 
 /**
  * Pure domain operation: Evaluate Overdue Tasks and fire automations idempotently.
- * Employs transition metadata ledger so duplicate evaluations without deadline change produce zero duplicate side-effects.
+ * Batches overdue tasks in a single pass and performs a single metric recomputation pass at the end.
  */
 export function evaluateOverdueTasksOp(
   state: WorkspaceState,
   referenceDate?: Date | string
 ): { state: WorkspaceState; triggeredCount: number } {
-  let currentState = state;
-  let triggeredCount = 0;
+  const overdueTasks: Task[] = [];
+  const affectedProjectIds = new Set<string>();
+  const affectedMemberIds = new Set<string>();
+  const now = referenceDate ? new Date(referenceDate).toISOString() : new Date().toISOString();
 
-  for (const task of currentState.tasks) {
+  // 1. Identify all overdue tasks in a single pass
+  for (let i = 0; i < state.tasks.length; i++) {
+    const task = state.tasks[i];
     if (
       task.status !== 'Done' &&
       isTaskOverdue(task.dueDate, task.status, referenceDate) &&
       task.lastOverdueHandledDeadline !== task.dueDate
     ) {
-      const now = referenceDate ? new Date(referenceDate).toISOString() : new Date().toISOString();
-      const updatedTask: Task = {
-        ...task,
-        lastOverdueHandledDeadline: task.dueDate,
-        updatedAt: now,
-      };
-
-      // Commit task update into current evaluation state
-      currentState = {
-        ...currentState,
-        tasks: currentState.tasks.map((t) => (t.id === task.id ? updatedTask : t)),
-      };
-
-      currentState = applyAutomationEvent(
-        currentState,
-        { type: 'DEADLINE_OVERDUE', task: updatedTask },
-        referenceDate
-      );
-      triggeredCount++;
+      overdueTasks.push(task);
+      affectedProjectIds.add(task.projectId);
+      if (task.assigneeId) affectedMemberIds.add(task.assigneeId);
     }
   }
 
-  return { state: currentState, triggeredCount };
+  if (overdueTasks.length === 0) {
+    return { state, triggeredCount: 0 };
+  }
+
+  const updatedTasksMap = new Map<string, Task>();
+  for (const task of overdueTasks) {
+    updatedTasksMap.set(task.id, {
+      ...task,
+      lastOverdueHandledDeadline: task.dueDate,
+      updatedAt: now,
+    });
+  }
+
+  let nextTasks = state.tasks.map((t) => updatedTasksMap.get(t.id) || t);
+  let nextProjects = state.projects;
+  let nextNotifications = state.notifications;
+  let nextActivities = state.activities;
+  let nextAutomations = state.automations;
+  let triggeredCount = 0;
+
+  // 2. Process automations with batch composition
+  for (const task of overdueTasks) {
+    const updatedTask = updatedTasksMap.get(task.id)!;
+    const result = processWorkspaceAutomation(
+      nextAutomations,
+      { type: 'DEADLINE_OVERDUE', task: updatedTask },
+      nextTasks,
+      nextProjects,
+      referenceDate
+    );
+
+    if (result.triggeredRuleIds.length > 0) {
+      triggeredCount++;
+      nextTasks = result.updatedTasks;
+      nextProjects = result.updatedProjects;
+      nextNotifications = [...result.newNotifications, ...nextNotifications].slice(0, MAX_NOTIFICATIONS_RETAINED);
+      nextActivities = [...result.newActivities, ...nextActivities].slice(0, MAX_ACTIVITIES_RETAINED);
+      nextAutomations = nextAutomations.map((r) =>
+        result.triggeredRuleIds.includes(r.id) ? { ...r, lastTriggered: 'Just now' } : r
+      );
+    }
+  }
+
+  let nextState: WorkspaceState = {
+    ...state,
+    tasks: nextTasks,
+    projects: nextProjects,
+    notifications: nextNotifications,
+    activities: nextActivities,
+    automations: nextAutomations,
+  };
+
+  // 3. Recompute metrics ONCE at the end for affected projects & members
+  nextState = recomputeWorkspaceMetrics(
+    nextState,
+    Array.from(affectedProjectIds),
+    Array.from(affectedMemberIds),
+    referenceDate
+  );
+
+  return { state: nextState, triggeredCount };
 }

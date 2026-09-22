@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   ArrowUpDown,
   Filter,
@@ -10,7 +10,6 @@ import {
   MoreHorizontal,
   Clock,
   X,
-  ChevronDown,
 } from 'lucide-react';
 import { Task, TaskPriority, TaskStatus } from '../../types';
 import { useApp } from '../../context/AppContext';
@@ -24,6 +23,8 @@ interface TaskListViewProps {
   showProjectColumn?: boolean;
 }
 
+const PAGE_SIZE = 50;
+
 export const TaskListView: React.FC<TaskListViewProps> = ({ tasks, showProjectColumn = true }) => {
   const {
     projects,
@@ -31,7 +32,6 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ tasks, showProjectCo
     setSelectedTaskId,
     bulkUpdateTasks,
     bulkDeleteTasks,
-    moveTaskStatus,
   } = useApp();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -42,6 +42,12 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ tasks, showProjectCo
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
   const [isBulkDeleteConfirmOpen, setIsBulkDeleteConfirmOpen] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+
+  // Reset pagination to page 1 on filter or search change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [statusFilter, priorityFilter, assigneeFilter, searchQuery, sortField, sortOrder]);
 
   // Filtering & Sorting
   const filteredTasks = useMemo(() => {
@@ -73,6 +79,13 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ tasks, showProjectCo
         return sortOrder === 'asc' ? cmp : -cmp;
       });
   }, [tasks, statusFilter, priorityFilter, assigneeFilter, searchQuery, sortField, sortOrder]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredTasks.length / PAGE_SIZE));
+  const safePage = Math.min(currentPage, totalPages);
+  const startIndex = (safePage - 1) * PAGE_SIZE;
+  const paginatedTasks = useMemo(() => {
+    return filteredTasks.slice(startIndex, startIndex + PAGE_SIZE);
+  }, [filteredTasks, startIndex]);
 
   const toggleSort = (field: 'title' | 'dueDate' | 'priority' | 'status') => {
     if (sortField === field) {
@@ -222,7 +235,7 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ tasks, showProjectCo
                 </td>
               </tr>
             ) : (
-              filteredTasks.map((t) => {
+              paginatedTasks.map((t) => {
                 const isSelected = selectedTaskIds.includes(t.id);
                 const project = projects.find((p) => p.id === t.projectId);
                 const assignee = members.find((m) => m.id === t.assigneeId);
@@ -299,6 +312,36 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ tasks, showProjectCo
           </tbody>
         </table>
       </div>
+
+      {/* Pagination Footer */}
+      {filteredTasks.length > PAGE_SIZE && (
+        <div className="px-4 py-2.5 bg-white dark:bg-[#0c1017] border-t border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 shrink-0 select-none">
+          <div className="font-mono text-[11px]">
+            Showing <span className="font-semibold text-slate-700 dark:text-slate-300">{startIndex + 1}</span>–<span className="font-semibold text-slate-700 dark:text-slate-300">{Math.min(startIndex + PAGE_SIZE, filteredTasks.length)}</span> of <span className="font-semibold text-slate-700 dark:text-slate-300">{filteredTasks.length.toLocaleString()}</span> tasks
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={safePage <= 1}
+              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+              className="px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors font-medium text-slate-700 dark:text-slate-300"
+            >
+              Previous
+            </button>
+            <span className="px-1.5 text-xs font-mono">
+              Page {safePage} of {totalPages}
+            </span>
+            <button
+              type="button"
+              disabled={safePage >= totalPages}
+              onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+              className="px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors font-medium text-slate-700 dark:text-slate-300"
+            >
+              Next
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Floating Sticky Bulk Actions Bar */}
       {selectedTaskIds.length > 0 && (

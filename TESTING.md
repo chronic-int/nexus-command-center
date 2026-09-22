@@ -42,7 +42,7 @@ The NEXUS domain model enforces invariants across every mutation operation:
 
 ## 3. Test Suite Taxonomy
 
-The test suite is organized into 6 specialized layers across 23 test suites:
+The test suite is organized into 7 specialized layers across 29 test suites (110 total tests):
 
 ```
 tests/
@@ -67,6 +67,13 @@ tests/
 │   ├── timeBasedAutomations.test.ts     # Time-shifted deadline expiry & overdue status triggers
 │   ├── undoSemantics.test.ts            # Entity identity preservation on undo without side-effects
 │   └── validatorMutations.test.ts       # 14 adversarial mutations testing validator detection
+├── performance/
+│   ├── atomicity.test.ts                # Transactional atomicity across tasks, progress, workloads, activities
+│   ├── burstMutations.test.ts           # 100 rapid same-tick mutations without lost updates
+│   ├── metricsEquivalence.test.ts       # Proves fast metrics match brute-force calculations bit-for-bit
+│   ├── perfHarness.test.ts              # Automated benchmark harness across Small, Medium, Large tiers
+│   ├── persistenceScale.test.ts         # IndexedDB round-trip, write coalescing, 5MB+ payload handling
+│   └── stressGenerator.test.ts          # Generates 500 prj / 10k tasks / 200 members passing integrity
 └── ui/
     ├── componentSecurity.test.tsx       # React DOM rendering of adversarial markdown & modal attributes
     ├── kanbanTouchKeyboard.test.tsx     # Keyboard accessibility & touch progress controls
@@ -84,13 +91,20 @@ npm run verify
 ```
 This executes:
 1. `npm run typecheck`: Runs `tsc -b` on production code and `tsc --noEmit -p tsconfig.test.json` on the test suite.
-2. `npm run test:run`: Runs all 23 Vitest suites (96 tests) across invariants, fuzzing, and UI.
-3. `npm run build`: Compiles production Vite bundles with zero errors or warnings.
+2. `npm run lint`: Runs `oxlint` ensuring 0 lint errors across the codebase.
+3. `npm run test:run`: Runs all 29 Vitest suites (110 tests) across invariants, fuzzing, scale, performance, and UI.
+4. `npm run build`: Compiles production Vite bundles with zero errors.
 
 ### Individual Verification Commands
 ```bash
+# Run the automated performance benchmark harness across Small, Medium, and Large
+npm run perf
+
 # Typecheck production code and test suite strictly
 npm run typecheck
+
+# Run linter
+npm run lint
 
 # Run Vitest test runner once
 npm run test:run
