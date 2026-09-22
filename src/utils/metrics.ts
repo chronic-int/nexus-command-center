@@ -17,7 +17,8 @@ export function calculateProjectProgress(tasks: Task[], projectId: string): numb
 export function calculateProjectHealth(
   tasks: Task[],
   projectId: string,
-  currentHealth: ProjectHealth = 'On Track'
+  currentHealth: ProjectHealth = 'On Track',
+  referenceDate?: Date | string
 ): ProjectHealth {
   const projectTasks = tasks.filter((t) => t.projectId === projectId);
   if (projectTasks.length === 0) return currentHealth;
@@ -27,7 +28,7 @@ export function calculateProjectHealth(
   ).length;
 
   const overdueUnresolved = projectTasks.filter(
-    (t) => t.status !== 'Done' && isTaskOverdue(t.dueDate, t.status)
+    (t) => t.status !== 'Done' && isTaskOverdue(t.dueDate, t.status, referenceDate)
   ).length;
 
   if (urgentUnresolved >= 3 || overdueUnresolved >= 2) {

@@ -5,9 +5,14 @@
 
 /**
  * Returns today's date in local YYYY-MM-DD format.
+ * Can optionally accept an explicit reference date for deterministic testing.
  */
-export function getTodayString(): string {
-  const now = new Date();
+export function getTodayString(referenceDate?: Date | string): string {
+  const now = referenceDate
+    ? typeof referenceDate === 'string'
+      ? parseLocalDate(referenceDate)
+      : referenceDate
+    : new Date();
   const year = now.getFullYear();
   const month = String(now.getMonth() + 1).padStart(2, '0');
   const day = String(now.getDate()).padStart(2, '0');
@@ -30,27 +35,34 @@ export function parseLocalDate(dateStr: string): Date {
 }
 
 /**
- * Checks if a task is overdue relative to the actual local date.
+ * Checks if a task is overdue relative to the actual local date or an injected reference date.
  */
-export function isTaskOverdue(dueDateStr: string, status?: string): boolean {
+export function isTaskOverdue(
+  dueDateStr: string,
+  status?: string,
+  referenceDate?: Date | string
+): boolean {
   if (!dueDateStr || status === 'Done') return false;
-  const today = parseLocalDate(getTodayString());
+  const today = parseLocalDate(getTodayString(referenceDate));
   const dueDate = parseLocalDate(dueDateStr);
   return dueDate.getTime() < today.getTime();
 }
 
 /**
- * Checks if a given date string is today.
+ * Checks if a given date string is today (or matches reference date).
  */
-export function isTodayDate(dateStr: string): boolean {
-  return dateStr === getTodayString();
+export function isTodayDate(dateStr: string, referenceDate?: Date | string): boolean {
+  return dateStr === getTodayString(referenceDate);
 }
 
 /**
  * Calculates remaining days until deadline (negative if overdue).
  */
-export function getDaysUntilDeadline(deadlineStr: string): number {
-  const today = parseLocalDate(getTodayString());
+export function getDaysUntilDeadline(
+  deadlineStr: string,
+  referenceDate?: Date | string
+): number {
+  const today = parseLocalDate(getTodayString(referenceDate));
   const deadline = parseLocalDate(deadlineStr);
   const diffMs = deadline.getTime() - today.getTime();
   return Math.round(diffMs / (1000 * 60 * 60 * 24));
@@ -59,15 +71,21 @@ export function getDaysUntilDeadline(deadlineStr: string): number {
 /**
  * Formats relative timestamp for comments, activities, and audit logs.
  */
-export function formatRelativeTime(isoOrDateStr: string): string {
+export function formatRelativeTime(
+  isoOrDateStr: string,
+  referenceDate?: Date | string
+): string {
   if (!isoOrDateStr) return '';
   const date = new Date(isoOrDateStr);
   if (isNaN(date.getTime())) {
-    // If it's already a friendly string like "Yesterday" or "2h ago", return it
     return isoOrDateStr;
   }
 
-  const now = new Date();
+  const now = referenceDate
+    ? typeof referenceDate === 'string'
+      ? new Date(referenceDate)
+      : referenceDate
+    : new Date();
   const diffSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
 
   if (diffSeconds < 60) return 'Just now';

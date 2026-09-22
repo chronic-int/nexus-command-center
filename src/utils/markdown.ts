@@ -19,16 +19,42 @@ export function escapeHtml(input: string): string {
  * Sanitizes URLs to ensure they only use safe protocols (http, https, mailto, relative).
  */
 export function sanitizeUrl(url: string): string {
-  const trimmed = url.trim().toLowerCase();
+  if (!url) return '';
+  const trimmed = url.trim();
+
+  // Normalize and decode entities to uncover obfuscated schemes
+  const normalized = trimmed
+    .replace(/&amp;/gi, '&')
+    .replace(/&colon;/gi, ':')
+    .replace(/&#x3a;/gi, ':')
+    .replace(/&#58;/gi, ':')
+    .replace(/[\u0000-\u001F\u007F-\u009F\s]/g, '')
+    .toLowerCase();
+
   if (
-    trimmed.startsWith('javascript:') ||
-    trimmed.startsWith('data:') ||
-    trimmed.startsWith('vbscript:') ||
-    trimmed.includes('javascript&colon;')
+    normalized.startsWith('javascript:') ||
+    normalized.startsWith('data:') ||
+    normalized.startsWith('vbscript:') ||
+    normalized.includes('javascript:')
   ) {
     return '#blocked-unsafe-link';
   }
-  return url.trim();
+
+  // Permitted scheme allowlist
+  const lower = trimmed.toLowerCase();
+  if (
+    lower.startsWith('http://') ||
+    lower.startsWith('https://') ||
+    lower.startsWith('mailto:') ||
+    lower.startsWith('tel:') ||
+    lower.startsWith('#') ||
+    lower.startsWith('/') ||
+    lower.startsWith('./')
+  ) {
+    return trimmed;
+  }
+
+  return '#blocked-unsafe-link';
 }
 
 /**
