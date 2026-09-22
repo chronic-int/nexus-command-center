@@ -43,61 +43,77 @@ export function taskMatchesCondition(
 
   const cond = conditionStr.toLowerCase().trim();
 
+  // 1. Always
   if (cond === 'always') {
     return true;
   }
 
-  if (cond.includes('status != done')) {
-    if (task.status === 'Done') return false;
+  // 2. Status != Done
+  if (cond.includes('status != done') || cond.includes('status is not done')) {
+    return task.status !== 'Done';
   }
 
-  if (cond.includes('assignee is unassigned') || cond.includes('unassigned')) {
-    if (task.assigneeId && task.assigneeId !== 'unassigned' && task.assigneeId.trim() !== '') {
-      return false;
-    }
+  // 3. Assignee is unassigned
+  if (cond.includes('assignee is unassigned') || cond === 'unassigned') {
+    return !task.assigneeId || task.assigneeId === 'unassigned' || task.assigneeId.trim() === '';
   }
 
-  if (cond.includes('priority == urgent')) {
-    if (task.priority !== 'Urgent') return false;
+  // 4. Priority == Urgent
+  if (cond.includes('priority == urgent') || cond.includes('priority is urgent')) {
+    return task.priority === 'Urgent';
   }
 
+  // 5. Project == <Name/Key>
   if (cond.includes('project ==')) {
     const project = projects.find((p) => p.id === task.projectId);
     const targetNameMatch = cond.replace('project ==', '').trim();
-    if (!project || (!project.name.toLowerCase().includes(targetNameMatch) && !project.key.toLowerCase().includes(targetNameMatch))) {
-      return false;
-    }
+    if (!project) return false;
+    return (
+      project.name.toLowerCase().includes(targetNameMatch) ||
+      project.key.toLowerCase().includes(targetNameMatch)
+    );
   }
 
+  // 6. Subtasks completion < 100%
   if (cond.includes('subtasks completion < 100%')) {
-    if (task.subtasks.length === 0) return false;
-    const hasUnfinished = task.subtasks.some((s) => !s.completed);
-    if (!hasUnfinished) return false;
+    if (!task.subtasks || task.subtasks.length === 0) return false;
+    return task.subtasks.some((s) => !s.completed);
   }
 
+  // 7. All subtasks completed
+  if (cond.includes('all subtasks completed')) {
+    if (!task.subtasks || task.subtasks.length === 0) return false;
+    return task.subtasks.every((s) => s.completed);
+  }
+
+  // 8. Urgent count > 3
   if (cond.includes('urgent count > 3')) {
     const projectUrgent = allTasks.filter(
       (t) => t.projectId === task.projectId && t.priority === 'Urgent' && t.status !== 'Done'
     ).length;
-    if (projectUrgent <= 3) return false;
+    return projectUrgent > 3;
   }
 
+  // 9. DevOps / Infrastructure label
   if (cond.includes('devops') || cond.includes('infrastructure')) {
-    const hasMatch = task.labels.some((l) => {
+    return (task.labels || []).some((l) => {
       const lower = l.toLowerCase();
       return lower.includes('devops') || lower.includes('infra');
     });
-    if (!hasMatch) return false;
   }
 
-  if (cond.includes('all subtasks completed')) {
-    if (task.subtasks.length === 0 || task.subtasks.some((s) => !s.completed)) return false;
-  }
-
-  return true;
+  // FAIL CLOSED: Return false for unknown, malformed, or unsupported condition semantics
+  return false;
 }
 
-export const evaluateAutomationCondition = taskMatchesCondition;
+export function evaluateAutomationCondition(
+  conditionStr: string,
+  task: Task,
+  allTasks: Task[] = [],
+  projects: Project[] = []
+): boolean {
+  return taskMatchesCondition(task, conditionStr, allTasks, projects);
+}
 
 /**
  * Checks if a task event matches an automation rule's trigger.
@@ -262,8 +278,8 @@ export function executeAutomationAction(
   if (
     actionLower.includes('priority = urgent') ||
     actionLower.includes('escalate priority') ||
-    actionLower.includes('escalate to urgent') ||
-    actionLower.includes('urgent')
+    actionLower.includes('set priority to urgent') ||
+    actionLower === 'escalate to urgent'
   ) {
     updatedTasks = updatedTasks.map((t) =>
       t.id === task.id ? { ...t, priority: 'Urgent', updatedAt: new Date().toISOString() } : t
@@ -317,8 +333,7 @@ export function executeAutomationAction(
   // Action 3: Assign task to Alex Rivera
   if (
     actionLower.includes('assign task to alex rivera') ||
-    actionLower.includes('assign to alex rivera') ||
-    actionLower.includes('alex rivera')
+    actionLower.includes('assign to alex rivera')
   ) {
     updatedTasks = updatedTasks.map((t) =>
       t.id === task.id ? { ...t, assigneeId: 'user-1', updatedAt: new Date().toISOString() } : t
@@ -363,7 +378,7 @@ export function executeAutomationAction(
     }
   }
 
-  // Action 5: Dispatch Slack & email webhook
+  // Action 5: Dispatch Slack & email webhook (Honest local simulation)
   if (
     actionLower.includes('slack') ||
     actionLower.includes('webhook') ||
@@ -371,8 +386,8 @@ export function executeAutomationAction(
   ) {
     notifications.push({
       id: generateEntityId('notif'),
-      title: 'Webhook Dispatched',
-      message: `Outbound alert dispatched to Slack & Email channels for task ${task.key}.`,
+      title: 'Webhook Event Simulated',
+      message: `External webhook simulated locally (audit logged) for task ${task.key}.`,
       category: 'System',
       timestamp: 'Just now',
       read: false,
@@ -383,7 +398,7 @@ export function executeAutomationAction(
     activities.push({
       id: generateEntityId('act'),
       userId: 'system',
-      action: `dispatched webhook via rule "${ruleName}"`,
+      action: `simulated webhook dispatch via rule "${ruleName}"`,
       targetName: task.title,
       targetType: 'task',
       targetId: task.id,
@@ -392,17 +407,22 @@ export function executeAutomationAction(
     });
   }
 
-  // Action 6: Review notification
+  // Action 6: Review or generic notification
   if (
     actionLower.includes('assignment notification for elena') ||
     actionLower.includes('send review notification') ||
-    actionLower.includes('review notification') ||
-    actionLower.includes('elena')
+    actionLower.includes('notify tech lead') ||
+    actionLower.startsWith('send notification') ||
+    actionLower.startsWith('notify')
   ) {
+    const customMessage = actionStr.includes(':')
+      ? actionStr.substring(actionStr.indexOf(':') + 1).trim()
+      : `Notification triggered for ${task.key} (${task.title}) via rule "${ruleName}".`;
+
     notifications.push({
       id: generateEntityId('notif'),
-      title: 'Task Ready for Lead Review',
-      message: `Elena Rostova was notified to review ${task.key} (${task.title}).`,
+      title: actionLower.includes('review') ? 'Task Ready for Lead Review' : `Alert: ${ruleName}`,
+      message: customMessage || `Elena Rostova was notified to review ${task.key} (${task.title}).`,
       category: 'Assignments',
       timestamp: 'Just now',
       read: false,

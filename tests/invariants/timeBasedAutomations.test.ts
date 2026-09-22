@@ -14,13 +14,9 @@ describe('Time-Based Automations & Overdue Invariants', () => {
       name: 'Escalate Overdue',
       description: 'Escalate overdue tasks to Urgent',
       trigger: 'DEADLINE_OVERDUE',
-      triggerDescription: 'When task deadline passes without completion',
       condition: 'Status != Done',
-      conditionDescription: 'Status != Done',
       action: 'Escalate priority to Urgent',
-      actionDescription: 'Escalate to Urgent',
       enabled: true,
-      executionCount: 0,
     };
 
     ws.automations = [overdueRule];
@@ -59,13 +55,9 @@ describe('Time-Based Automations & Overdue Invariants', () => {
       name: 'Escalate Overdue',
       description: 'Escalate',
       trigger: 'DEADLINE_OVERDUE',
-      triggerDescription: 'Overdue',
       condition: 'Status != Done',
-      conditionDescription: 'Status != Done',
       action: 'Escalate priority to Urgent',
-      actionDescription: 'Escalate to Urgent',
       enabled: true,
-      executionCount: 0,
     };
 
     ws.automations = [overdueRule];

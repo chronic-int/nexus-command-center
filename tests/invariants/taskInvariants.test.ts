@@ -146,7 +146,7 @@ describe('Task Domain Invariants', () => {
       message: 'Testing task deletion cleanup',
       timestamp: 'Just now',
       read: false,
-      type: 'assignment',
+      category: 'Assignments',
       targetId: taskToDelete.id,
     });
 

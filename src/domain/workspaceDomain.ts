@@ -9,7 +9,7 @@ import {
   ActivityItem,
   TaskStatus,
 } from '../types';
-import { getNextTaskKey, generateEntityId } from '../utils/idGenerator';
+import { getNextTaskKey, generateEntityId, generateUniqueProjectKey } from '../utils/idGenerator';
 import { getTodayString, isTaskOverdue } from '../utils/dateUtils';
 import {
   calculateProjectProgress,
@@ -350,6 +350,65 @@ export function deleteTaskOp(
 }
 
 /**
+ * Pure domain operation: Restore / Undo Deleted Task
+ * Restores the exact entity identity, keys, timestamps, subtasks, and comments without firing creation automations.
+ */
+export function restoreTaskOp(
+  state: WorkspaceState,
+  taskToRestore: Task,
+  referenceDate?: Date | string
+): { state: WorkspaceState; restoredTask: Task } {
+  // If task already exists in state, idempotent return
+  if (state.tasks.some((t) => t.id === taskToRestore.id)) {
+    return { state, restoredTask: taskToRestore };
+  }
+
+  // 1. Verify project existence. If original project was deleted in the interim,
+  // reassign task to the first available project.
+  let targetProjectId = taskToRestore.projectId;
+  const projectExists = state.projects.some((p) => p.id === targetProjectId);
+  if (!projectExists && state.projects.length > 0) {
+    targetProjectId = state.projects[0].id;
+  }
+
+  const project = state.projects.find((p) => p.id === targetProjectId);
+  const projectKey = project ? project.key : 'NEX';
+
+  // 2. Verify key uniqueness. If another task claimed this key while deleted,
+  // allocate the next monotonic unique key to eliminate collisions.
+  let targetKey = taskToRestore.key;
+  if (state.tasks.some((t) => t.key === targetKey)) {
+    targetKey = getNextTaskKey(projectKey, state.tasks);
+  }
+
+  const restoredTask: Task = {
+    ...taskToRestore,
+    projectId: targetProjectId,
+    key: targetKey,
+  };
+
+  const restorationActivity: ActivityItem = {
+    id: generateEntityId('act'),
+    userId: 'user-1',
+    action: 'restored deleted task',
+    targetName: restoredTask.title,
+    targetType: 'task',
+    targetId: restoredTask.id,
+    timestamp: 'Just now',
+    projectId: restoredTask.projectId,
+  };
+
+  let nextState: WorkspaceState = {
+    ...state,
+    tasks: [restoredTask, ...state.tasks],
+    activities: [restorationActivity, ...state.activities],
+  };
+
+  nextState = recomputeWorkspaceMetrics(nextState, [restoredTask.projectId], referenceDate);
+  return { state: nextState, restoredTask };
+}
+
+/**
  * Pure domain operation: Create Project
  */
 export function createProjectOp(
@@ -357,7 +416,7 @@ export function createProjectOp(
   data: Partial<Project>,
   referenceDate?: Date | string
 ): { state: WorkspaceState; project: Project } {
-  const key = data.key?.toUpperCase().trim() || `PRJ-${state.projects.length + 1}`;
+  const key = generateUniqueProjectKey(data.key, state.projects);
   const todayStr = getTodayString(referenceDate);
 
   const newProject: Project = {
@@ -443,7 +502,8 @@ export function deleteProjectCascadeOp(
 }
 
 /**
- * Pure domain operation: Evaluate Overdue Tasks and fire automations
+ * Pure domain operation: Evaluate Overdue Tasks and fire automations idempotently.
+ * Employs transition metadata ledger so duplicate evaluations without deadline change produce zero duplicate side-effects.
  */
 export function evaluateOverdueTasksOp(
   state: WorkspaceState,
@@ -453,11 +513,27 @@ export function evaluateOverdueTasksOp(
   let triggeredCount = 0;
 
   for (const task of currentState.tasks) {
-    if (task.status !== 'Done' && isTaskOverdue(task.dueDate, task.status, referenceDate)) {
-      const beforeRules = currentState.automations;
+    if (
+      task.status !== 'Done' &&
+      isTaskOverdue(task.dueDate, task.status, referenceDate) &&
+      task.lastOverdueHandledDeadline !== task.dueDate
+    ) {
+      const now = referenceDate ? new Date(referenceDate).toISOString() : new Date().toISOString();
+      const updatedTask: Task = {
+        ...task,
+        lastOverdueHandledDeadline: task.dueDate,
+        updatedAt: now,
+      };
+
+      // Commit task update into current evaluation state
+      currentState = {
+        ...currentState,
+        tasks: currentState.tasks.map((t) => (t.id === task.id ? updatedTask : t)),
+      };
+
       currentState = applyAutomationEvent(
         currentState,
-        { type: 'DEADLINE_OVERDUE', task },
+        { type: 'DEADLINE_OVERDUE', task: updatedTask },
         referenceDate
       );
       triggeredCount++;

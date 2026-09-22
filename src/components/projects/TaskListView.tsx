@@ -16,6 +16,7 @@ import { Task, TaskPriority, TaskStatus } from '../../types';
 import { useApp } from '../../context/AppContext';
 import { PriorityBadge, StatusBadge } from '../common/Badge';
 import { Avatar } from '../common/Avatar';
+import { ConfirmationModal } from '../common/ConfirmationModal';
 import { isTaskOverdue } from '../../utils/dateUtils';
 
 interface TaskListViewProps {
@@ -40,6 +41,7 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ tasks, showProjectCo
   const [sortField, setSortField] = useState<'title' | 'dueDate' | 'priority' | 'status'>('dueDate');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
+  const [isBulkDeleteConfirmOpen, setIsBulkDeleteConfirmOpen] = useState(false);
 
   // Filtering & Sorting
   const filteredTasks = useMemo(() => {
@@ -380,10 +382,7 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ tasks, showProjectCo
             {/* Bulk Delete */}
             <button
               type="button"
-              onClick={() => {
-                bulkDeleteTasks(selectedTaskIds);
-                setSelectedTaskIds([]);
-              }}
+              onClick={() => setIsBulkDeleteConfirmOpen(true)}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold transition-colors"
             >
               <Trash2 className="w-3.5 h-3.5" />
@@ -392,6 +391,21 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ tasks, showProjectCo
           </div>
         </div>
       )}
+
+      <ConfirmationModal
+        isOpen={isBulkDeleteConfirmOpen}
+        onClose={() => setIsBulkDeleteConfirmOpen(false)}
+        onConfirm={() => {
+          bulkDeleteTasks(selectedTaskIds);
+          setSelectedTaskIds([]);
+          setIsBulkDeleteConfirmOpen(false);
+        }}
+        title={`Delete ${selectedTaskIds.length} Tasks`}
+        description={`Are you sure you want to delete ${selectedTaskIds.length} selected tasks? This action will remove them from the project and update member workloads.`}
+        confirmLabel="Delete Tasks"
+        variant="danger"
+        icon="trash"
+      />
     </div>
   );
 };

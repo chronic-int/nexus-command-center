@@ -14,13 +14,9 @@ describe('Snapshot Safety & State Composition Invariants', () => {
       name: 'Review Escalation',
       description: 'Escalate on review',
       trigger: 'STATUS_CHANGED',
-      triggerDescription: 'When task moves to Review',
       condition: 'Always',
-      conditionDescription: 'Always',
       action: 'Escalate priority to Urgent',
-      actionDescription: 'Escalate to Urgent',
       enabled: true,
-      executionCount: 0,
     };
 
     ws.automations = [reviewEscalateRule];

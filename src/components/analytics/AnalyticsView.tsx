@@ -30,6 +30,7 @@ import { useApp } from '../../context/AppContext';
 import { exportTasksToCsv } from '../../utils/csvExporter';
 import { calculateAverageCycleTimeDays } from '../../utils/metrics';
 import { isTaskOverdue } from '../../utils/dateUtils';
+import { buildCompositeTelemetrySeries } from '../../data/historicalTelemetry';
 
 export const AnalyticsView: React.FC = () => {
   const { tasks, projects, members, addToast } = useApp();
@@ -97,47 +98,10 @@ export const AnalyticsView: React.FC = () => {
     return Math.round(((tasks.length - overdueCount) / tasks.length) * 1000) / 10;
   }, [tasks, overdueCount]);
 
-  // Cumulative Burnup Trend reactive to timeRange and task volume
+  // Cumulative Burnup Trend: Immutable historical series combined with live current interval
   const cumulativeTrendData = useMemo(() => {
-    const total = tasks.length;
-    const completed = completedCount;
-
-    if (timeRange === 'week') {
-      return [
-        { sprint: 'Mon', planned: Math.round(total * 0.4), completed: Math.round(completed * 0.3) },
-        { sprint: 'Tue', planned: Math.round(total * 0.55), completed: Math.round(completed * 0.45) },
-        { sprint: 'Wed', planned: Math.round(total * 0.7), completed: Math.round(completed * 0.6) },
-        { sprint: 'Thu', planned: Math.round(total * 0.82), completed: Math.round(completed * 0.75) },
-        { sprint: 'Fri', planned: Math.round(total * 0.95), completed: Math.round(completed * 0.9) },
-        { sprint: 'Today', planned: total, completed },
-      ];
-    }
-    if (timeRange === 'quarter') {
-      return [
-        { sprint: 'Sprint 28', planned: Math.max(10, total - 40), completed: Math.max(8, completed - 35) },
-        { sprint: 'Sprint 29', planned: Math.max(18, total - 30), completed: Math.max(16, completed - 25) },
-        { sprint: 'Sprint 30', planned: Math.max(25, total - 20), completed: Math.max(22, completed - 15) },
-        { sprint: 'Sprint 31', planned: Math.max(35, total - 10), completed: Math.max(30, completed - 8) },
-        { sprint: 'Sprint 32', planned: Math.max(45, total - 4), completed: Math.max(38, completed - 2) },
-        { sprint: 'Current', planned: total, completed },
-      ];
-    }
-    if (timeRange === 'year') {
-      return [
-        { sprint: 'Q1', planned: Math.round(total * 0.25), completed: Math.round(completed * 0.22) },
-        { sprint: 'Q2', planned: Math.round(total * 0.5), completed: Math.round(completed * 0.48) },
-        { sprint: 'Q3', planned: Math.round(total * 0.75), completed: Math.round(completed * 0.72) },
-        { sprint: 'Q4 (Current)', planned: total, completed },
-      ];
-    }
-    // Default: 'month'
-    return [
-      { sprint: 'Week 1', planned: Math.round(total * 0.3), completed: Math.round(completed * 0.25) },
-      { sprint: 'Week 2', planned: Math.round(total * 0.52), completed: Math.round(completed * 0.48) },
-      { sprint: 'Week 3', planned: Math.round(total * 0.78), completed: Math.round(completed * 0.72) },
-      { sprint: 'Week 4', planned: total, completed },
-    ];
-  }, [tasks.length, completedCount, timeRange]);
+    return buildCompositeTelemetrySeries(timeRange, tasks.length, completedCount);
+  }, [timeRange, tasks.length, completedCount]);
 
   const handleExportData = () => {
     const success = exportTasksToCsv(tasks, projects, members);

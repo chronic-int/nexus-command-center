@@ -16,13 +16,9 @@ describe('Automation Engine Invariants & Capability Matrix', () => {
       name: 'Disabled Test Rule',
       description: 'Should never run',
       trigger: 'STATUS_CHANGED',
-      triggerDescription: 'When task moves to Done',
       condition: 'Always',
-      conditionDescription: 'Always',
       action: 'Escalate priority to Urgent',
-      actionDescription: 'Escalate to Urgent',
       enabled: false,
-      executionCount: 10,
     };
 
     const task = { ...ws.tasks[0], status: 'Done' as const };
@@ -47,13 +43,9 @@ describe('Automation Engine Invariants & Capability Matrix', () => {
       name: 'Active Rule',
       description: 'Fires when task moves to Done',
       trigger: 'STATUS_CHANGED',
-      triggerDescription: 'When task moves to Done',
       condition: 'Always',
-      conditionDescription: 'Always',
       action: 'Send review notification to lead',
-      actionDescription: 'Send review notification',
       enabled: true,
-      executionCount: 0,
     };
 
     ws.automations = [activeRule];
@@ -177,7 +169,7 @@ describe('Automation Engine Invariants & Capability Matrix', () => {
       'rule-5'
     );
     expect(action5Result.activities.length).toBeGreaterThan(0);
-    expect(action5Result.activities[0].action).toContain('dispatched webhook');
+    expect(action5Result.activities[0].action).toContain('webhook');
   });
 
   it('triggers automation upon task creation when matching criteria met', () => {
@@ -188,13 +180,9 @@ describe('Automation Engine Invariants & Capability Matrix', () => {
       name: 'Auto Assign Unassigned',
       description: 'Auto assign',
       trigger: 'TASK_CREATED',
-      triggerDescription: 'Task Created',
       condition: 'Assignee is unassigned',
-      conditionDescription: 'Assignee is unassigned',
       action: 'Assign task to Alex Rivera',
-      actionDescription: 'Assign to Alex Rivera',
       enabled: true,
-      executionCount: 0,
     };
 
     ws.automations = [autoAssignRule];

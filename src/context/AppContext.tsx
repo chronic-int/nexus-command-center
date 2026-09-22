@@ -49,7 +49,9 @@ import {
   createProjectOp,
   deleteProjectCascadeOp,
   evaluateOverdueTasksOp,
+  restoreTaskOp,
 } from '../domain/workspaceDomain';
+import { hydrateAndValidateWorkspace } from '../domain/workspaceHydration';
 
 interface AppContextType {
   // Collections
@@ -161,41 +163,49 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // 1. Initial State Hydration with Scoped LocalStorage
-  const [projects, setProjects] = useState<Project[]>(() =>
-    getStoredItem(STORAGE_KEYS.PROJECTS, INITIAL_PROJECTS)
-  );
-  const [tasks, setTasks] = useState<Task[]>(() =>
-    getStoredItem(STORAGE_KEYS.TASKS, INITIAL_TASKS)
-  );
-  const [members, setMembers] = useState<TeamMember[]>(() =>
-    getStoredItem(STORAGE_KEYS.MEMBERS, INITIAL_MEMBERS)
-  );
-  const [pendingInvitations, setPendingInvitations] = useState<PendingInvitation[]>(() =>
-    getStoredItem(STORAGE_KEYS.INVITATIONS, [
-      {
-        id: 'inv_init_1',
-        email: 'jordan.zhao@nexus.io',
-        name: 'Jordan Zhao',
-        role: 'Staff Frontend Engineer',
-        department: 'Engineering',
-        invitedAt: 'Yesterday',
-        status: 'Pending',
-      },
-    ])
-  );
-  const [documents, setDocuments] = useState<Document[]>(() =>
-    getStoredItem(STORAGE_KEYS.DOCUMENTS, INITIAL_DOCUMENTS)
-  );
-  const [notifications, setNotifications] = useState<Notification[]>(() =>
-    getStoredItem(STORAGE_KEYS.NOTIFICATIONS, INITIAL_NOTIFICATIONS)
-  );
-  const [automations, setAutomations] = useState<AutomationRule[]>(() =>
-    getStoredItem(STORAGE_KEYS.AUTOMATIONS, INITIAL_AUTOMATIONS)
-  );
-  const [activities, setActivities] = useState<ActivityItem[]>(() =>
-    getStoredItem(STORAGE_KEYS.ACTIVITIES, INITIAL_ACTIVITIES)
-  );
+  // 1. Initial State Hydration with Scoped LocalStorage & Runtime Sanitization
+  const initialWorkspace = useMemo(() => {
+    const raw = {
+      projects: getStoredItem(STORAGE_KEYS.PROJECTS, INITIAL_PROJECTS),
+      tasks: getStoredItem(STORAGE_KEYS.TASKS, INITIAL_TASKS),
+      members: getStoredItem(STORAGE_KEYS.MEMBERS, INITIAL_MEMBERS),
+      pendingInvitations: getStoredItem(STORAGE_KEYS.INVITATIONS, [
+        {
+          id: 'inv_init_1',
+          email: 'jordan.zhao@nexus.io',
+          name: 'Jordan Zhao',
+          role: 'Staff Frontend Engineer',
+          department: 'Engineering',
+          invitedAt: 'Yesterday',
+          status: 'Pending',
+        },
+      ]),
+      documents: getStoredItem(STORAGE_KEYS.DOCUMENTS, INITIAL_DOCUMENTS),
+      notifications: getStoredItem(STORAGE_KEYS.NOTIFICATIONS, INITIAL_NOTIFICATIONS),
+      automations: getStoredItem(STORAGE_KEYS.AUTOMATIONS, INITIAL_AUTOMATIONS),
+      activities: getStoredItem(STORAGE_KEYS.ACTIVITIES, INITIAL_ACTIVITIES),
+    };
+
+    return hydrateAndValidateWorkspace(raw, {
+      projects: INITIAL_PROJECTS,
+      tasks: INITIAL_TASKS,
+      members: INITIAL_MEMBERS,
+      pendingInvitations: [],
+      documents: INITIAL_DOCUMENTS,
+      notifications: INITIAL_NOTIFICATIONS,
+      automations: INITIAL_AUTOMATIONS,
+      activities: INITIAL_ACTIVITIES,
+    }).workspace;
+  }, []);
+
+  const [projects, setProjects] = useState<Project[]>(() => initialWorkspace.projects);
+  const [tasks, setTasks] = useState<Task[]>(() => initialWorkspace.tasks);
+  const [members, setMembers] = useState<TeamMember[]>(() => initialWorkspace.members);
+  const [pendingInvitations, setPendingInvitations] = useState<PendingInvitation[]>(() => initialWorkspace.pendingInvitations);
+  const [documents, setDocuments] = useState<Document[]>(() => initialWorkspace.documents);
+  const [notifications, setNotifications] = useState<Notification[]>(() => initialWorkspace.notifications);
+  const [automations, setAutomations] = useState<AutomationRule[]>(() => initialWorkspace.automations);
+  const [activities, setActivities] = useState<ActivityItem[]>(() => initialWorkspace.activities);
 
   // Theming & Density
   const [theme, setThemeState] = useState<ThemeMode>(() =>
@@ -437,7 +447,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         action: {
           label: 'Undo',
           onClick: () => {
-            const restoredState = createTaskOp(getCurrentState(), target).state;
+            const restoredState = restoreTaskOp(getCurrentState(), target).state;
             commitWorkspaceState(restoredState);
           },
         },

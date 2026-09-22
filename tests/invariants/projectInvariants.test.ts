@@ -134,7 +134,7 @@ describe('Project Domain Invariants', () => {
         message: 'Proj',
         timestamp: 'Just now',
         read: false,
-        type: 'system',
+        category: 'System',
         targetId: projectId,
       },
       {
@@ -143,7 +143,7 @@ describe('Project Domain Invariants', () => {
         message: 'Task',
         timestamp: 'Just now',
         read: false,
-        type: 'assignment',
+        category: 'Assignments',
         targetId: testTaskId,
       }
     );

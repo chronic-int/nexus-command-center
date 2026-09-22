@@ -46,6 +46,7 @@ export interface Task {
   attachments: Attachment[];
   createdAt: string;
   updatedAt: string;
+  lastOverdueHandledDeadline?: string;
 }
 
 export interface Project {

@@ -16,13 +16,9 @@ describe('Automation Loop Protection & Adversarial Guardrails', () => {
       name: 'Cyclic Escalation',
       description: 'Changes to Urgent',
       trigger: 'PRIORITY_CHANGED',
-      triggerDescription: 'Priority changed',
       condition: 'Always',
-      conditionDescription: 'Always',
       action: 'Set Priority = Urgent & Send Notification',
-      actionDescription: 'Escalate to Urgent',
       enabled: true,
-      executionCount: 0,
     };
 
     const rule2: AutomationRule = {
@@ -30,13 +26,9 @@ describe('Automation Loop Protection & Adversarial Guardrails', () => {
       name: 'Cyclic De-escalation',
       description: 'Changes to High',
       trigger: 'PRIORITY_CHANGED',
-      triggerDescription: 'Priority changed to Urgent',
       condition: 'Priority == Urgent',
-      conditionDescription: 'Priority == Urgent',
       action: 'Escalate priority to Urgent',
-      actionDescription: 'Escalate',
       enabled: true,
-      executionCount: 0,
     };
 
     const task: Task = { ...ws.tasks[0], priority: 'Low' };
@@ -67,13 +59,9 @@ describe('Automation Loop Protection & Adversarial Guardrails', () => {
       name: 'Self Triggering Rule',
       description: 'Self trigger',
       trigger: 'STATUS_CHANGED',
-      triggerDescription: 'Status changed',
       condition: 'Always',
-      conditionDescription: 'Always',
       action: 'Set Priority = Urgent & Send Notification',
-      actionDescription: 'Escalate',
       enabled: true,
-      executionCount: 0,
     };
 
     ws.automations = [selfTriggeringRule];
