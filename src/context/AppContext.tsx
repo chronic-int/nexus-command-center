@@ -15,6 +15,7 @@ import {
   ThemeMode,
   DensityMode,
   ToastMessage,
+  PersistenceStatus,
 } from '../types';
 import {
   INITIAL_MEMBERS,
@@ -46,13 +47,25 @@ import {
   bulkUpdateTasksOp,
   bulkDeleteTasksOp,
   bulkRestoreTasksOp,
+  compareVersions,
+  createResetWorkspaceState,
 } from '../domain/workspaceDomain';
 import { hydrateAndValidateWorkspace } from '../domain/workspaceHydration';
 import {
   scheduleWorkspacePersistence,
   loadUnifiedWorkspace,
   clearWorkspaceFromIDB,
+  onPersistenceStatusChange,
+  getPersistenceStatus,
+  setPersistenceStatus,
+  retryFailedPersistence,
 } from '../utils/idbStorage';
+import {
+  initTabSync,
+  broadcastMutation,
+  broadcastWorkspaceReset,
+  applyRemoteTaskDelta,
+} from '../utils/tabSync';
 
 interface AppContextType {
   // Collections
@@ -159,6 +172,10 @@ interface AppContextType {
 
   // Reset
   resetDemoData: () => void;
+
+  // Persistence & Multi-Tab Synchronization
+  persistenceStatus: PersistenceStatus;
+  retryPersistence: () => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -249,19 +266,101 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Toasts
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
-  // Async hydration from IndexedDB on startup
+  // Persistence status tracking
+  const [persistenceStatus, setPersistenceStatusState] = useState<PersistenceStatus>(getPersistenceStatus());
+  useEffect(() => {
+    return onPersistenceStatusChange(setPersistenceStatusState);
+  }, []);
+
+  // Track whether any local mutation has occurred since component mounted
+  const hasLocalMutatedSinceMountRef = useRef<boolean>(false);
+
+  // Async hydration from IndexedDB on startup with race protection
   useEffect(() => {
     let isMounted = true;
     loadUnifiedWorkspace().then((persisted) => {
-      if (isMounted && persisted && persisted.projects && persisted.tasks) {
-        const sanitized = hydrateAndValidateWorkspace(persisted, initialWorkspace).workspace;
-        workspaceRef.current = sanitized;
-        setWorkspace(sanitized);
+      if (!isMounted) return;
+      if (persisted && persisted.projects && persisted.tasks) {
+        // If local state was already mutated by the user before hydration completed,
+        // do not overwrite the user's edits with an older storage snapshot!
+        if (hasLocalMutatedSinceMountRef.current) {
+          console.warn('[NEXUS Hydration] Preserving in-memory state; local mutations occurred prior to hydration completion');
+          return;
+        }
+
+        if (compareVersions(persisted, workspaceRef.current) > 0) {
+          const sanitized = hydrateAndValidateWorkspace(persisted, initialWorkspace).workspace;
+          workspaceRef.current = sanitized;
+          setWorkspace(sanitized);
+        }
       }
     });
     return () => {
       isMounted = false;
     };
+  }, [initialWorkspace]);
+
+  // Multi-tab coordination effect
+  useEffect(() => {
+    return initTabSync({
+      onRemoteMutation: (payload) => {
+        const current = workspaceRef.current;
+        // Ignore mutations from older epochs
+        if (payload.epoch < (current.epoch ?? 1)) {
+          return;
+        }
+
+        if (payload.taskDeltas && payload.taskDeltas.length > 0) {
+          let updated = current;
+          let hadAnyConflict = false;
+          for (const delta of payload.taskDeltas) {
+            const res = applyRemoteTaskDelta(updated, delta, payload.epoch, payload.revision);
+            updated = res.nextState;
+            if (res.hadConflict) hadAnyConflict = true;
+          }
+          workspaceRef.current = updated;
+          setWorkspace(updated);
+          setPersistenceStatus(hadAnyConflict ? 'conflict' : 'remote_update');
+          setTimeout(() => {
+            if (getPersistenceStatus() === 'remote_update' || getPersistenceStatus() === 'conflict') {
+              setPersistenceStatus('saved');
+            }
+          }, 3000);
+        } else {
+          // Other mutations: reload from storage if newer
+          loadUnifiedWorkspace().then((persisted) => {
+            if (persisted && compareVersions(persisted, workspaceRef.current) > 0) {
+              const sanitized = hydrateAndValidateWorkspace(persisted, workspaceRef.current).workspace;
+              workspaceRef.current = sanitized;
+              setWorkspace(sanitized);
+              setPersistenceStatus('remote_update');
+              setTimeout(() => {
+                if (getPersistenceStatus() === 'remote_update') {
+                  setPersistenceStatus('saved');
+                }
+              }, 3000);
+            }
+          });
+        }
+      },
+      onRemoteReset: (payload) => {
+        if (payload.epoch >= (workspaceRef.current.epoch ?? 1)) {
+          loadUnifiedWorkspace().then((persisted) => {
+            if (persisted) {
+              const sanitized = hydrateAndValidateWorkspace(persisted, initialWorkspace).workspace;
+              workspaceRef.current = sanitized;
+              setWorkspace(sanitized);
+              setPersistenceStatus('remote_update');
+              setTimeout(() => {
+                if (getPersistenceStatus() === 'remote_update') {
+                  setPersistenceStatus('saved');
+                }
+              }, 3000);
+            }
+          });
+        }
+      },
+    });
   }, [initialWorkspace]);
 
   // Preference persistence
@@ -320,12 +419,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
    * without losing data to stale closures.
    */
   const executeTransaction = useCallback(
-    <R,>(op: (state: WorkspaceState) => { nextState: WorkspaceState; result: R }): R => {
+    <R,>(
+      op: (state: WorkspaceState) => { nextState: WorkspaceState; result: R },
+      options?: { mutationType?: string; taskDeltas?: Task[]; skipBroadcast?: boolean }
+    ): R => {
+      hasLocalMutatedSinceMountRef.current = true;
       const currentState = workspaceRef.current;
       const { nextState, result } = op(currentState);
       workspaceRef.current = nextState;
       setWorkspace(nextState);
       scheduleWorkspacePersistence(nextState);
+
+      if (!options?.skipBroadcast) {
+        broadcastMutation({
+          epoch: nextState.epoch ?? 1,
+          revision: nextState.revision ?? 1,
+          mutationId: generateEntityId('mut'),
+          mutationType: options?.mutationType || 'STATE_MUTATION',
+          timestamp: new Date().toISOString(),
+          taskDeltas: options?.taskDeltas,
+        });
+      }
+
       return result;
     },
     []
@@ -368,15 +483,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const updateTask = useCallback(
     (id: string, updates: Partial<Task>) => {
-      executeTransaction((state) => {
-        const { state: nextState } = updateTaskOp(state, id, updates);
-        return { nextState, result: undefined };
-      });
+      executeTransaction(
+        (state) => {
+          const { state: nextState, task } = updateTaskOp(state, id, updates);
+          return { nextState, result: task };
+        },
+        {
+          mutationType: 'UPDATE_TASK',
+          taskDeltas: workspaceRef.current.tasks.filter((t) => t.id === id),
+        }
+      );
 
       addToast({
         type: 'info',
         title: 'Task Updated',
-        message: 'Changes saved automatically',
+        message: 'Task updated',
         duration: 2000,
       });
     },
@@ -1031,16 +1152,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [addToast]
   );
 
-  // ---------------------------------------------------------------------------
-  // Scoped Non-Destructive Reset
-  // ---------------------------------------------------------------------------
   const resetDemoData = useCallback(() => {
     // Only clears keys prefixed with 'nexus_'!
     clearNexusStorage();
     clearWorkspaceFromIDB();
 
-    workspaceRef.current = initialWorkspace;
-    setWorkspace(initialWorkspace);
+    const resetState = createResetWorkspaceState(workspaceRef.current, initialWorkspace);
+    workspaceRef.current = resetState;
+    setWorkspace(resetState);
+    scheduleWorkspacePersistence(resetState, 0);
+    broadcastWorkspaceReset(resetState.epoch ?? 2, resetState.revision ?? 1);
     setDismissedInsightIds([]);
     setUsefulInsightCounts({});
 
@@ -1142,9 +1263,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       markInsightUseful,
 
       resetDemoData,
+
+      persistenceStatus,
+      retryPersistence: retryFailedPersistence,
     }),
     [
       workspace,
+      persistenceStatus,
       insights,
       activeView,
       activeProjectId,

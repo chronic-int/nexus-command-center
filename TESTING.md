@@ -37,15 +37,27 @@ The NEXUS domain model enforces invariants across every mutation operation:
 | **Security** | Document Markdown XSS Neutralization | `escapeHtml` + protocol allowlist (`sanitizeUrl`) removes script/iframe/onerror payloads in React DOM | `tests/ui/componentSecurity.test.tsx` |
 | **Accessibility** | Modal Background Inertness & Focus Trapping | `role="dialog"`, `aria-modal="true"`, backdrop `aria-hidden="true"`, Tab trapping, Escape dismiss | `tests/ui/modalAccessibility.test.tsx` |
 | **Safety** | Bulk Delete Affirmative Confirmation | `ConfirmationModal` required before destructive bulk task deletion | `src/components/projects/TaskListView.tsx` |
+| **Storage Durability** | Monotonic Revision & Epoch Guard (`epoch`, `revision`) | Transaction-level envelope guards reject stale / out-of-order writes and defeat reset resurrection | `tests/concurrency/outOfOrderWrites.test.ts` |
+| **Hydration Ordering** | Mount Mutation Race Protection (`hasLocalMutatedSinceMountRef`) | Async storage hydration cannot overwrite synchronous user edits performed before hydration completes | `tests/concurrency/hydrationRaces.test.ts` |
+| **Multi-Tab Sync** | 3-Way Concurrent Field-Level Merge (`mergeTaskFields`) | Disjoint field mutations (e.g. title vs priority) merge cleanly without data loss; conflicts detected honestly | `tests/concurrency/multiTabSync.test.ts` |
+| **Automation Isolation** | Remote Mutation Propagation Guard (`remote: true`) | Prevents cascading automation loops, duplicate webhooks, or notification storms across tabs | `tests/concurrency/multiTabSync.test.ts` |
+| **Storage Failover** | Dual-Tier IndexedDB to LocalStorage Fallback & Retry | Recovers from QuotaExceededError or IDB failures with exponential backoff and honest UI persistence status | `tests/concurrency/storageFailures.test.ts` |
+| **Adversarial Resiliency** | Multi-Tab Burst Stress with Reset Propagation | 2 concurrent tabs with burst mutations, storage flushes, reset propagation, and zero integrity violations | `tests/concurrency/finalAdversarialScenario.test.ts` |
 
 ---
 
 ## 3. Test Suite Taxonomy
 
-The test suite is organized into 7 specialized layers across 29 test suites (110 total tests):
+The test suite is organized into 8 specialized layers across 34 test suites (126 total tests):
 
 ```
 tests/
+├── concurrency/
+│   ├── finalAdversarialScenario.test.ts # Full Section 57 adversarial scenario with 2 concurrent tabs
+│   ├── hydrationRaces.test.ts           # Protection against stale async storage overwriting mount mutations
+│   ├── multiTabSync.test.ts             # 3-way field merge, conflict detection, automation isolation
+│   ├── outOfOrderWrites.test.ts         # Monotonic revision guard, write coalescing, reset resurrection
+│   └── storageFailures.test.ts          # LocalStorage fallback, retry backoff, >5MB payload roundtrip
 ├── invariants/
 │   ├── analyticsSeparation.test.ts      # Verifies historical telemetry remains frozen
 │   ├── automationFailClosed.test.ts     # Fail-closed condition parsing & keyword collision safety

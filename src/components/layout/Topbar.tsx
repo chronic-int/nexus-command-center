@@ -41,6 +41,8 @@ export const Topbar: React.FC = () => {
     setSelectedTaskId,
     setSelectedDocId,
     setSelectedMemberId,
+    persistenceStatus,
+    retryPersistence,
   } = useApp();
 
   // Search popup state
@@ -333,6 +335,61 @@ export const Topbar: React.FC = () => {
 
       {/* Right Controls */}
       <div className="flex items-center gap-2 shrink-0">
+        {/* Persistence Status Pill */}
+        <div
+          data-testid="persistence-status-pill"
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50"
+          title={
+            persistenceStatus === 'saved'
+              ? 'All changes saved to persistent storage'
+              : persistenceStatus === 'saving'
+              ? 'Saving changes to persistent storage...'
+              : persistenceStatus === 'error'
+              ? 'Failed to save changes. Click retry.'
+              : persistenceStatus === 'remote_update'
+              ? 'Synchronized changes from another tab'
+              : 'Concurrent edits detected and merged'
+          }
+        >
+          {persistenceStatus === 'saved' && (
+            <>
+              <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-xs shadow-emerald-500/50" />
+              <span className="text-slate-600 dark:text-slate-400 text-[11px] hidden md:inline">Saved</span>
+            </>
+          )}
+          {persistenceStatus === 'saving' && (
+            <>
+              <span className="w-2 h-2 rounded-full bg-sky-500 animate-pulse" />
+              <span className="text-sky-600 dark:text-sky-400 text-[11px] hidden md:inline">Saving...</span>
+            </>
+          )}
+          {persistenceStatus === 'error' && (
+            <>
+              <span className="w-2 h-2 rounded-full bg-rose-500" />
+              <span className="text-rose-600 dark:text-rose-400 text-[11px]">Save Error</span>
+              <button
+                type="button"
+                onClick={retryPersistence}
+                className="ml-1 text-[10px] underline text-rose-500 hover:text-rose-600 font-bold cursor-pointer"
+              >
+                Retry
+              </button>
+            </>
+          )}
+          {persistenceStatus === 'remote_update' && (
+            <>
+              <span className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
+              <span className="text-indigo-600 dark:text-indigo-400 text-[11px] hidden md:inline">Synced</span>
+            </>
+          )}
+          {persistenceStatus === 'conflict' && (
+            <>
+              <span className="w-2 h-2 rounded-full bg-amber-500" />
+              <span className="text-amber-600 dark:text-amber-400 text-[11px] hidden md:inline">Merged</span>
+            </>
+          )}
+        </div>
+
         {/* Quick-Create Button */}
         <button
           type="button"

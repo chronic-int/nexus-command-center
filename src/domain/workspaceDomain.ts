@@ -26,6 +26,10 @@ export const MAX_ACTIVITIES_RETAINED = 5000;
 export const MAX_NOTIFICATIONS_RETAINED = 2000;
 
 export interface WorkspaceState {
+  schemaVersion?: number;
+  epoch?: number;
+  revision?: number;
+  lastSavedAt?: string;
   projects: Project[];
   tasks: Task[];
   members: TeamMember[];
@@ -34,6 +38,184 @@ export interface WorkspaceState {
   notifications: Notification[];
   automations: AutomationRule[];
   activities: ActivityItem[];
+}
+
+/**
+ * Advances the logical revision of a workspace state monotonically.
+ */
+export function advanceWorkspaceVersion(
+  prevState: WorkspaceState,
+  overrides?: Partial<WorkspaceState>
+): WorkspaceState {
+  const epoch = prevState.epoch ?? 1;
+  const revision = (prevState.revision ?? 0) + 1;
+  return {
+    ...prevState,
+    ...overrides,
+    schemaVersion: 1,
+    epoch,
+    revision,
+    lastSavedAt: overrides?.lastSavedAt ?? prevState.lastSavedAt,
+  };
+}
+
+/**
+ * Creates a brand new workspace state with an incremented generation epoch,
+ * defeating any delayed/in-flight writes from prior workspace lifecycles.
+ */
+export function createResetWorkspaceState(
+  baseState: WorkspaceState,
+  freshState: Partial<WorkspaceState>
+): WorkspaceState {
+  const prevEpoch = baseState.epoch ?? 1;
+  return {
+    ...baseState,
+    ...freshState,
+    schemaVersion: 1,
+    epoch: prevEpoch + 1,
+    revision: 1,
+    lastSavedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Lexicographically compares two state versions or envelopes by (epoch, revision).
+ * Returns:
+ *   > 0 if a is strictly newer than b
+ *   < 0 if a is strictly older than b
+ *   0 if identical
+ */
+export function compareVersions(
+  a?: { epoch?: number; revision?: number } | null,
+  b?: { epoch?: number; revision?: number } | null
+): number {
+  const epochA = a?.epoch ?? 1;
+  const epochB = b?.epoch ?? 1;
+  if (epochA !== epochB) {
+    return epochA - epochB;
+  }
+  const revA = a?.revision ?? 0;
+  const revB = b?.revision ?? 0;
+  return revA - revB;
+}
+
+/**
+ * Merges two versions of a Task concurrently modified across tabs.
+ * If non-overlapping fields were edited, both edits are preserved.
+ * If conflicting fields were edited, the latest updatedAt (or remote if tie-breaker) wins.
+ * Merges subtasks and comments additively by ID.
+ */
+export function mergeTaskFields(
+  local: Task,
+  remote: Task,
+  baseline?: Task
+): { merged: Task; hadConflict: boolean } {
+  let hadConflict = false;
+
+  const localTime = new Date(local.updatedAt || 0).getTime();
+  const remoteTime = new Date(remote.updatedAt || 0).getTime();
+  const preferRemote = remoteTime >= localTime;
+
+  // Generic 3-way scalar merge helper
+  const mergeField = <T>(
+    localVal: T,
+    remoteVal: T,
+    baseVal?: T,
+    isConflictPredicate?: (a: T, b: T) => boolean
+  ): T => {
+    if (localVal === remoteVal) return localVal;
+
+    if (baseVal !== undefined) {
+      const localChanged = localVal !== baseVal;
+      const remoteChanged = remoteVal !== baseVal;
+
+      if (localChanged && remoteChanged) {
+        // Both changed concurrently to different values -> genuine conflict!
+        hadConflict = true;
+        return preferRemote ? remoteVal : localVal;
+      }
+      if (remoteChanged) return remoteVal;
+      if (localChanged) return localVal;
+      return baseVal;
+    }
+
+    // 2-way fallback without baseline
+    if (isConflictPredicate ? isConflictPredicate(localVal, remoteVal) : localVal !== remoteVal) {
+      hadConflict = true;
+    }
+    return preferRemote ? remoteVal : localVal;
+  };
+
+  const title = mergeField(local.title, remote.title, baseline?.title);
+  const description = mergeField(local.description, remote.description, baseline?.description);
+  const status = mergeField(local.status, remote.status, baseline?.status);
+  const priority = mergeField(local.priority, remote.priority, baseline?.priority);
+  const assigneeId = mergeField(local.assigneeId, remote.assigneeId, baseline?.assigneeId);
+  const projectId = mergeField(local.projectId, remote.projectId, baseline?.projectId);
+  const dueDate = mergeField(local.dueDate, remote.dueDate, baseline?.dueDate);
+  const startDate = mergeField(local.startDate, remote.startDate, baseline?.startDate);
+  const estimatedHours = mergeField(local.estimatedHours, remote.estimatedHours, baseline?.estimatedHours);
+
+  // Labels: union set
+  const labelSet = new Set([...(local.labels || []), ...(remote.labels || [])]);
+  const labels = Array.from(labelSet);
+
+  // Subtasks: merge by id
+  const subtaskMap = new Map<string, typeof local.subtasks[0]>();
+  for (const s of local.subtasks || []) subtaskMap.set(s.id, s);
+  for (const s of remote.subtasks || []) {
+    const existing = subtaskMap.get(s.id);
+    if (!existing) {
+      subtaskMap.set(s.id, s);
+    } else {
+      subtaskMap.set(s.id, {
+        id: s.id,
+        title: s.title || existing.title,
+        completed: s.completed || existing.completed,
+      });
+    }
+  }
+
+  // Comments: merge by id
+  const commentMap = new Map<string, typeof local.comments[0]>();
+  for (const c of local.comments || []) commentMap.set(c.id, c);
+  for (const c of remote.comments || []) {
+    if (!commentMap.has(c.id)) {
+      commentMap.set(c.id, c);
+    }
+  }
+
+  // Attachments: merge by id
+  const attachmentMap = new Map<string, typeof local.attachments[0]>();
+  for (const a of local.attachments || []) attachmentMap.set(a.id, a);
+  for (const a of remote.attachments || []) {
+    if (!attachmentMap.has(a.id)) {
+      attachmentMap.set(a.id, a);
+    }
+  }
+
+  const merged: Task = {
+    ...local,
+    title,
+    description,
+    status,
+    priority,
+    projectId,
+    assigneeId,
+    dueDate,
+    startDate,
+    estimatedHours,
+    labels,
+    subtasks: Array.from(subtaskMap.values()),
+    comments: Array.from(commentMap.values()).sort(
+      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    ),
+    attachments: Array.from(attachmentMap.values()),
+    updatedAt: new Date(Math.max(localTime, remoteTime)).toISOString(),
+    version: Math.max(local.version ?? 1, remote.version ?? 1) + 1,
+  };
+
+  return { merged, hadConflict };
 }
 
 /**
@@ -146,6 +328,7 @@ export function createTaskOp(
     attachments: data.attachments || [],
     createdAt: now,
     updatedAt: now,
+    version: 1,
   };
 
   const newActivity: ActivityItem = {
@@ -176,7 +359,7 @@ export function createTaskOp(
   nextState = applyAutomationEvent(nextState, { type: 'TASK_CREATED', task: newTask }, referenceDate);
 
   const finalTask = nextState.tasks.find((t) => t.id === newTask.id) || newTask;
-  return { state: nextState, task: finalTask };
+  return { state: advanceWorkspaceVersion(state, nextState), task: finalTask };
 }
 
 /**
@@ -198,6 +381,7 @@ export function updateTaskOp(
     ...previousTask,
     ...updates,
     updatedAt: now,
+    version: (previousTask.version ?? 1) + 1,
   };
 
   const nextTasks = state.tasks.map((t) => (t.id === taskId ? updatedTask : t));
@@ -236,7 +420,7 @@ export function updateTaskOp(
   }
 
   const finalTask = nextState.tasks.find((t) => t.id === taskId) || updatedTask;
-  return { state: nextState, task: finalTask };
+  return { state: advanceWorkspaceVersion(state, nextState), task: finalTask };
 }
 
 /**
@@ -258,6 +442,7 @@ export function moveTaskStatusOp(
     ...previousTask,
     status: newStatus,
     updatedAt: now,
+    version: (previousTask.version ?? 1) + 1,
   };
 
   const nextTasks = state.tasks.map((t) => (t.id === taskId ? updatedTask : t));
@@ -294,7 +479,7 @@ export function moveTaskStatusOp(
   );
 
   const finalTask = nextState.tasks.find((t) => t.id === taskId) || updatedTask;
-  return { state: nextState, task: finalTask };
+  return { state: advanceWorkspaceVersion(state, nextState), task: finalTask };
 }
 
 /**
@@ -318,6 +503,7 @@ export function moveTaskProjectOp(
     ...previousTask,
     projectId: newProjectId,
     updatedAt: now,
+    version: (previousTask.version ?? 1) + 1,
   };
 
   const nextTasks = state.tasks.map((t) => (t.id === taskId ? updatedTask : t));
@@ -348,7 +534,7 @@ export function moveTaskProjectOp(
   );
 
   const finalTask = nextState.tasks.find((t) => t.id === taskId) || updatedTask;
-  return { state: nextState, task: finalTask };
+  return { state: advanceWorkspaceVersion(state, nextState), task: finalTask };
 }
 
 /**
@@ -379,7 +565,7 @@ export function deleteTaskOp(
     target.assigneeId ? [target.assigneeId] : undefined,
     referenceDate
   );
-  return { state: nextState, deletedTask: target };
+  return { state: advanceWorkspaceVersion(state, nextState), deletedTask: target };
 }
 
 /**
@@ -418,6 +604,7 @@ export function restoreTaskOp(
     ...taskToRestore,
     projectId: targetProjectId,
     key: targetKey,
+    version: (taskToRestore.version ?? 1) + 1,
   };
 
   const restorationActivity: ActivityItem = {
@@ -443,7 +630,7 @@ export function restoreTaskOp(
     restoredTask.assigneeId ? [restoredTask.assigneeId] : undefined,
     referenceDate
   );
-  return { state: nextState, restoredTask };
+  return { state: advanceWorkspaceVersion(state, nextState), restoredTask };
 }
 
 /**
@@ -476,6 +663,7 @@ export function bulkUpdateTasksOp(
       ...task,
       ...updates,
       updatedAt: now,
+      version: (task.version ?? 1) + 1,
     };
 
     affectedProjectIds.add(task.projectId);
@@ -540,7 +728,7 @@ export function bulkUpdateTasksOp(
     );
   }
 
-  return { state: nextState, updatedTasks };
+  return { state: advanceWorkspaceVersion(state, nextState), updatedTasks };
 }
 
 /**
@@ -604,7 +792,7 @@ export function bulkDeleteTasksOp(
     referenceDate
   );
 
-  return { state: nextState, deletedTasks };
+  return { state: advanceWorkspaceVersion(state, nextState), deletedTasks };
 }
 
 /**
@@ -649,6 +837,7 @@ export function bulkRestoreTasksOp(
       ...task,
       projectId: targetProjectId,
       key: targetKey,
+      version: (task.version ?? 1) + 1,
     };
 
     restoredTasks.push(restored);
@@ -683,7 +872,7 @@ export function bulkRestoreTasksOp(
     referenceDate
   );
 
-  return { state: nextState, restoredTasks };
+  return { state: advanceWorkspaceVersion(state, nextState), restoredTasks };
 }
 
 /**
@@ -730,7 +919,7 @@ export function createProjectOp(
     activities: [newActivity, ...state.activities].slice(0, MAX_ACTIVITIES_RETAINED),
   };
 
-  return { state: nextState, project: newProject };
+  return { state: advanceWorkspaceVersion(state, nextState), project: newProject };
 }
 
 /**
@@ -776,7 +965,7 @@ export function deleteProjectCascadeOp(
 
   // Recompute member workloads since assigned tasks were removed (full fast O(T) pass)
   nextState = recomputeWorkspaceMetrics(nextState, undefined, undefined, referenceDate);
-  return { state: nextState, deletedProject: target };
+  return { state: advanceWorkspaceVersion(state, nextState), deletedProject: target };
 }
 
 /**
@@ -816,6 +1005,7 @@ export function evaluateOverdueTasksOp(
       ...task,
       lastOverdueHandledDeadline: task.dueDate,
       updatedAt: now,
+      version: (task.version ?? 1) + 1,
     });
   }
 
@@ -866,5 +1056,5 @@ export function evaluateOverdueTasksOp(
     referenceDate
   );
 
-  return { state: nextState, triggeredCount };
+  return { state: advanceWorkspaceVersion(state, nextState), triggeredCount };
 }

@@ -47,6 +47,7 @@ export interface Task {
   createdAt: string;
   updatedAt: string;
   lastOverdueHandledDeadline?: string;
+  version?: number;
 }
 
 export interface Project {
@@ -193,4 +194,32 @@ export interface ToastMessage {
     onClick: () => void;
   };
   duration?: number;
+}
+
+export type PersistenceStatus = 'saved' | 'saving' | 'error' | 'remote_update' | 'conflict';
+
+export interface PersistedEnvelope<T = unknown> {
+  schemaVersion: number;
+  epoch: number;
+  revision: number;
+  savedAt: string;
+  data: T;
+}
+
+export type SyncMessageType = 'MUTATION_BROADCAST' | 'WORKSPACE_RESET' | 'ACK_VERSION';
+
+export interface MutationBroadcastPayload {
+  sourceTabId: string;
+  epoch: number;
+  revision: number;
+  mutationId: string;
+  mutationType: string;
+  timestamp: string;
+  taskDeltas?: Task[];
+  entityId?: string;
+}
+
+export interface SyncMessage {
+  type: SyncMessageType;
+  payload: MutationBroadcastPayload;
 }

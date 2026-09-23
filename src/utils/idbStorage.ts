@@ -1,14 +1,44 @@
-import { WorkspaceState } from '../domain/workspaceDomain';
+import { WorkspaceState, compareVersions } from '../domain/workspaceDomain';
 import { STORAGE_KEYS, getStoredItem, setStoredItem } from './storage';
+import { PersistedEnvelope, PersistenceStatus } from '../types';
 
 const DB_NAME = 'nexus_indexeddb';
 const DB_VERSION = 1;
 const STORE_NAME = 'workspace_store';
 const RECORD_KEY = 'current_workspace';
+const ENVELOPE_STORAGE_KEY = 'nexus_workspace_envelope';
 
 let dbInstance: IDBDatabase | null = null;
 let isOpening = false;
 let openPromise: Promise<IDBDatabase | null> | null = null;
+
+// Persistence status state & listeners
+let currentStatus: PersistenceStatus = 'saved';
+const statusListeners = new Set<(status: PersistenceStatus) => void>();
+
+export function getPersistenceStatus(): PersistenceStatus {
+  return currentStatus;
+}
+
+export function setPersistenceStatus(status: PersistenceStatus): void {
+  if (currentStatus === status) return;
+  currentStatus = status;
+  for (const listener of statusListeners) {
+    try {
+      listener(status);
+    } catch {
+      // ignore listener errors
+    }
+  }
+}
+
+export function onPersistenceStatusChange(listener: (status: PersistenceStatus) => void): () => void {
+  statusListeners.add(listener);
+  listener(currentStatus);
+  return () => {
+    statusListeners.delete(listener);
+  };
+}
 
 /**
  * Initializes and caches the IndexedDB connection.
@@ -65,23 +95,115 @@ export async function getIDBDatabase(): Promise<IDBDatabase | null> {
 }
 
 /**
- * Directly writes a workspace state record into IndexedDB.
+ * Wraps a workspace state in a PersistedEnvelope.
+ */
+export function wrapWorkspaceEnvelope(state: WorkspaceState): PersistedEnvelope<WorkspaceState> {
+  return {
+    schemaVersion: state.schemaVersion ?? 1,
+    epoch: state.epoch ?? 1,
+    revision: state.revision ?? 1,
+    savedAt: state.lastSavedAt || new Date().toISOString(),
+    data: state,
+  };
+}
+
+/**
+ * Directly loads the raw persisted envelope from IndexedDB.
+ */
+export async function loadRawEnvelopeFromIDB(): Promise<PersistedEnvelope<WorkspaceState> | null> {
+  try {
+    const db = await getIDBDatabase();
+    if (!db) return null;
+
+    return new Promise((resolve) => {
+      try {
+        const tx = db.transaction(STORE_NAME, 'readonly');
+        const store = tx.objectStore(STORE_NAME);
+        const req = store.get(RECORD_KEY);
+
+        req.onsuccess = () => {
+          const val = req.result;
+          if (!val) {
+            resolve(null);
+            return;
+          }
+          // Check if enveloped or raw legacy format
+          if (val.schemaVersion && val.data) {
+            resolve(val as PersistedEnvelope<WorkspaceState>);
+          } else if (val.projects && val.tasks) {
+            // Legacy un-enveloped format
+            resolve({
+              schemaVersion: 1,
+              epoch: val.epoch ?? 1,
+              revision: val.revision ?? 1,
+              savedAt: val.lastSavedAt || new Date().toISOString(),
+              data: val as WorkspaceState,
+            });
+          } else {
+            resolve(null);
+          }
+        };
+        req.onerror = () => resolve(null);
+      } catch {
+        resolve(null);
+      }
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Directly writes a workspace state record into IndexedDB with monotonicity check.
+ * Rejects or ignores writes that would regress durable epoch/revision.
  */
 export async function saveWorkspaceToIDB(state: WorkspaceState): Promise<boolean> {
   try {
     const db = await getIDBDatabase();
     if (!db) return false;
 
+    const candidateEnvelope = wrapWorkspaceEnvelope(state);
+
     return new Promise((resolve) => {
       try {
         const tx = db.transaction(STORE_NAME, 'readwrite');
         const store = tx.objectStore(STORE_NAME);
-        const req = store.put(state, RECORD_KEY);
 
-        req.onsuccess = () => resolve(true);
-        req.onerror = (err) => {
-          console.warn('[NEXUS IDB] Write transaction failed:', err);
-          resolve(false);
+        // Check currently stored record to guarantee monotonicity
+        const getReq = store.get(RECORD_KEY);
+
+        getReq.onsuccess = () => {
+          const current = getReq.result;
+          if (current) {
+            const currentEnvelope = current.data ? current : {
+              epoch: current.epoch ?? 1,
+              revision: current.revision ?? 1,
+            };
+
+            // If candidate is strictly older or equal, do not regress durable storage
+            if (compareVersions(currentEnvelope, candidateEnvelope) > 0) {
+              console.warn(
+                `[NEXUS IDB] Discarding stale write (candidate epoch:${candidateEnvelope.epoch} rev:${candidateEnvelope.revision} <= current epoch:${currentEnvelope.epoch} rev:${currentEnvelope.revision})`
+              );
+              resolve(true); // Treated as succeeded because stored state is already fresher
+              return;
+            }
+          }
+
+          const putReq = store.put(candidateEnvelope, RECORD_KEY);
+          putReq.onsuccess = () => resolve(true);
+          putReq.onerror = (err) => {
+            console.warn('[NEXUS IDB] Write put failed:', err);
+            resolve(false);
+          };
+        };
+
+        getReq.onerror = (err) => {
+          console.warn('[NEXUS IDB] Pre-write check failed:', err);
+          // Attempt put anyway if get failed
+          const putReq = store.put(candidateEnvelope, RECORD_KEY);
+          putReq.onsuccess = () => resolve(true);
+          putReq.onerror = () => resolve(false);
         };
       } catch (err) {
         console.warn('[NEXUS IDB] Transaction creation exception:', err);
@@ -98,28 +220,8 @@ export async function saveWorkspaceToIDB(state: WorkspaceState): Promise<boolean
  * Directly loads workspace state from IndexedDB.
  */
 export async function loadWorkspaceFromIDB(): Promise<WorkspaceState | null> {
-  try {
-    const db = await getIDBDatabase();
-    if (!db) return null;
-
-    return new Promise((resolve) => {
-      try {
-        const tx = db.transaction(STORE_NAME, 'readonly');
-        const store = tx.objectStore(STORE_NAME);
-        const req = store.get(RECORD_KEY);
-
-        req.onsuccess = () => {
-          const val = req.result;
-          resolve(val || null);
-        };
-        req.onerror = () => resolve(null);
-      } catch {
-        resolve(null);
-      }
-    });
-  } catch {
-    return null;
-  }
+  const envelope = await loadRawEnvelopeFromIDB();
+  return envelope ? envelope.data : null;
 }
 
 /**
@@ -147,13 +249,22 @@ export async function clearWorkspaceFromIDB(): Promise<boolean> {
 }
 
 // ---------------------------------------------------------------------------
-// Debounced Write Queue with In-Flight Coalescing
+// Debounced Write Queue with In-Flight Coalescing, Retries & Status
 // ---------------------------------------------------------------------------
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingStateToPersist: WorkspaceState | null = null;
 let isWriteInFlight = false;
 let flushResolvers: Array<() => void> = [];
+let lastFailedState: WorkspaceState | null = null;
+
+export function retryFailedPersistence(): void {
+  if (lastFailedState) {
+    const state = lastFailedState;
+    lastFailedState = null;
+    scheduleWorkspacePersistence(state, 0);
+  }
+}
 
 /**
  * Flushes any pending writes asynchronously. Resolves when all writes are committed.
@@ -175,6 +286,24 @@ export async function flushWorkspacePersistence(): Promise<void> {
 }
 
 /**
+ * Executes a write attempt with up to 3 retries and exponential backoff.
+ */
+async function writeWithRetries(state: WorkspaceState, maxRetries = 3): Promise<boolean> {
+  let attempt = 0;
+  while (attempt < maxRetries) {
+    attempt++;
+    const success = await saveWorkspaceToIDB(state);
+    if (success) {
+      return true;
+    }
+    if (attempt < maxRetries) {
+      await new Promise((r) => setTimeout(r, attempt * 50));
+    }
+  }
+  return false;
+}
+
+/**
  * Core write loop: writes pendingStateToPersist, then drains any newer state or resolves waiters.
  */
 async function triggerPersistCycle(): Promise<void> {
@@ -192,26 +321,33 @@ async function triggerPersistCycle(): Promise<void> {
   const stateToWrite = pendingStateToPersist;
   pendingStateToPersist = null;
   isWriteInFlight = true;
+  setPersistenceStatus('saving');
 
   try {
-    const idbSuccess = await saveWorkspaceToIDB(stateToWrite);
-    if (!idbSuccess) {
-      // Fallback to localStorage (best-effort; catches QuotaExceededError without crashing)
+    const idbSuccess = await writeWithRetries(stateToWrite, 3);
+    if (idbSuccess) {
+      setPersistenceStatus('saved');
+      lastFailedState = null;
+    } else {
+      // Fallback to localStorage envelope with best-effort
       try {
+        const envelope = wrapWorkspaceEnvelope(stateToWrite);
+        localStorage.setItem(ENVELOPE_STORAGE_KEY, JSON.stringify(envelope));
+        // Also keep raw keys for backwards compatibility if quota allows
         setStoredItem(STORAGE_KEYS.PROJECTS, stateToWrite.projects);
         setStoredItem(STORAGE_KEYS.TASKS, stateToWrite.tasks);
-        setStoredItem(STORAGE_KEYS.MEMBERS, stateToWrite.members);
-        setStoredItem(STORAGE_KEYS.INVITATIONS, stateToWrite.pendingInvitations);
-        setStoredItem(STORAGE_KEYS.DOCUMENTS, stateToWrite.documents);
-        setStoredItem(STORAGE_KEYS.NOTIFICATIONS, stateToWrite.notifications);
-        setStoredItem(STORAGE_KEYS.AUTOMATIONS, stateToWrite.automations);
-        setStoredItem(STORAGE_KEYS.ACTIVITIES, stateToWrite.activities);
-      } catch (err) {
-        console.warn('[NEXUS Storage] Fallback write to localStorage failed:', err);
+        setPersistenceStatus('saved');
+        lastFailedState = null;
+      } catch (storageErr) {
+        console.warn('[NEXUS Storage] Fallback write to localStorage failed:', storageErr);
+        setPersistenceStatus('error');
+        lastFailedState = stateToWrite;
       }
     }
   } catch (err) {
     console.warn('[NEXUS Storage] Persistence cycle exception:', err);
+    setPersistenceStatus('error');
+    lastFailedState = stateToWrite;
   } finally {
     isWriteInFlight = false;
 
@@ -231,6 +367,10 @@ async function triggerPersistCycle(): Promise<void> {
  * Coalesces rapid consecutive mutations into a single disk write.
  */
 export function scheduleWorkspacePersistence(state: WorkspaceState, delayMs: number = 500): void {
+  // If we already have a pending state, ensure we don't regress version
+  if (pendingStateToPersist && compareVersions(pendingStateToPersist, state) > 0) {
+    return;
+  }
   pendingStateToPersist = state;
 
   if (debounceTimer) {
@@ -244,17 +384,55 @@ export function scheduleWorkspacePersistence(state: WorkspaceState, delayMs: num
 }
 
 /**
+ * Loads the raw envelope stored in localStorage (if any).
+ */
+export function loadEnvelopeFromLocalStorage(): PersistedEnvelope<WorkspaceState> | null {
+  try {
+    const raw = localStorage.getItem(ENVELOPE_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.data && parsed.epoch !== undefined) {
+        return parsed;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+/**
  * Unified persistence loader:
- * Checks IndexedDB first. If not found or empty, loads from LocalStorage.
+ * Checks IndexedDB and LocalStorage, resolves split-brain by picking highest (epoch, revision).
  */
 export async function loadUnifiedWorkspace(): Promise<WorkspaceState | null> {
-  // 1. Try IndexedDB
-  const idbData = await loadWorkspaceFromIDB();
-  if (idbData && idbData.projects && idbData.tasks) {
-    return idbData;
+  // 1. Fetch both envelopes
+  const idbEnvelope = await loadRawEnvelopeFromIDB();
+  const localEnvelope = loadEnvelopeFromLocalStorage();
+
+  // 2. Resolve split-brain: choose whichever envelope has strictly higher version
+  if (idbEnvelope && localEnvelope) {
+    const cmp = compareVersions(localEnvelope, idbEnvelope);
+    if (cmp > 0) {
+      console.warn(
+        `[NEXUS Storage] LocalStorage envelope (epoch:${localEnvelope.epoch}, rev:${localEnvelope.revision}) is newer than IndexedDB (epoch:${idbEnvelope.epoch}, rev:${idbEnvelope.revision}). Migrating forward.`
+      );
+      // Migrate newer localStorage state to IndexedDB asynchronously
+      saveWorkspaceToIDB(localEnvelope.data).catch(() => {});
+      return localEnvelope.data;
+    }
+    return idbEnvelope.data;
   }
 
-  // 2. Check localStorage fallback
+  if (idbEnvelope) {
+    return idbEnvelope.data;
+  }
+
+  if (localEnvelope) {
+    return localEnvelope.data;
+  }
+
+  // 3. Check legacy localStorage keys fallback
   try {
     const projects = getStoredItem(STORAGE_KEYS.PROJECTS, null);
     const tasks = getStoredItem(STORAGE_KEYS.TASKS, null);
@@ -267,6 +445,9 @@ export async function loadUnifiedWorkspace(): Promise<WorkspaceState | null> {
       const activities = getStoredItem(STORAGE_KEYS.ACTIVITIES, []);
 
       return {
+        schemaVersion: 1,
+        epoch: 1,
+        revision: 1,
         projects,
         tasks,
         members,
@@ -282,4 +463,46 @@ export async function loadUnifiedWorkspace(): Promise<WorkspaceState | null> {
   }
 
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Page Lifecycle Listeners
+// ---------------------------------------------------------------------------
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      flushWorkspacePersistence().catch(() => {});
+    }
+  });
+
+  window.addEventListener('pagehide', () => {
+    flushWorkspacePersistence().catch(() => {});
+  });
+}
+
+/**
+ * Resets internal module state for testing.
+ */
+export function resetIDBForTesting(): void {
+  if (dbInstance) {
+    try {
+      dbInstance.close();
+    } catch {
+      // ignore
+    }
+  }
+  dbInstance = null;
+  isOpening = false;
+  openPromise = null;
+  pendingStateToPersist = null;
+  isWriteInFlight = false;
+  lastFailedState = null;
+  currentStatus = 'saved';
+  statusListeners.clear();
+  flushResolvers = [];
+  if (debounceTimer) {
+    clearTimeout(debounceTimer);
+    debounceTimer = null;
+  }
 }

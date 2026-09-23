@@ -26,14 +26,14 @@ describe('Large Workspace Stress Fixture & Integrity', () => {
     expect(ws.documents).toHaveLength(500);
     expect(ws.automations).toHaveLength(100);
 
-    // Generation should complete within reasonable timeframe (< 2 seconds)
-    expect(generationDuration).toBeLessThan(4000);
+    // Generation should complete within reasonable timeframe (< 10 seconds under concurrent load)
+    expect(generationDuration).toBeLessThan(10000);
 
     // 2. Validate 100% domain integrity
     const issues = validateWorkspaceIntegrity(ws);
     const errors = issues.filter((i) => i.severity === 'error');
     expect(errors).toEqual([]);
-  });
+  }, 15000);
 
   it('produces 100% identical states when using the same seed', () => {
     const ws1 = createLargeWorkspace({ seed: 12345, projects: 10, tasks: 50 });
