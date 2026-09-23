@@ -187,6 +187,32 @@ export class TabSyncSession {
     }
   }
 
+  public broadcastStorageCommit(epoch: number, revision: number): void {
+    const fullPayload: MutationBroadcastPayload = {
+      sourceTabId: this.tabId,
+      epoch,
+      revision,
+      mutationId: `commit_${Date.now()}_${Math.random()}`,
+      mutationType: 'STORAGE_COMMITTED',
+      timestamp: new Date().toISOString(),
+    };
+
+    this.recordMutationId(fullPayload.mutationId);
+
+    const message: SyncMessage = {
+      type: 'MUTATION_BROADCAST',
+      payload: fullPayload,
+    };
+
+    if (this.channel) {
+      try {
+        this.channel.postMessage(message);
+      } catch (err) {
+        console.warn('[NEXUS TabSync] BroadcastChannel error:', err);
+      }
+    }
+  }
+
   public close(): void {
     if (this.channel) {
       try {
@@ -243,6 +269,10 @@ export function broadcastMutation(
 
 export function broadcastWorkspaceReset(epoch: number, revision: number): void {
   defaultSession.broadcastWorkspaceReset(epoch, revision);
+}
+
+export function broadcastStorageCommit(epoch: number, revision: number): void {
+  defaultSession.broadcastStorageCommit(epoch, revision);
 }
 
 export function resetTabSyncForTesting(): void {

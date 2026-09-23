@@ -48,6 +48,31 @@ export function validateWorkspaceIntegrity(state: WorkspaceState): ValidationIss
   const notificationIds = new Set<string>();
   const activityIds = new Set<string>();
 
+  // 0. Workspace Ordering & Version Metadata Invariants
+  if (
+    state.epoch !== undefined &&
+    (typeof state.epoch !== 'number' || isNaN(state.epoch) || !Number.isInteger(state.epoch) || state.epoch < 1)
+  ) {
+    issues.push({
+      severity: 'error',
+      entity: 'project',
+      entityId: 'workspace_epoch',
+      message: `Invalid workspace epoch: ${state.epoch}. Must be a positive integer >= 1.`,
+    });
+  }
+
+  if (
+    state.revision !== undefined &&
+    (typeof state.revision !== 'number' || isNaN(state.revision) || !Number.isInteger(state.revision) || state.revision < 1)
+  ) {
+    issues.push({
+      severity: 'error',
+      entity: 'project',
+      entityId: 'workspace_revision',
+      message: `Invalid workspace revision: ${state.revision}. Must be a positive integer >= 1.`,
+    });
+  }
+
   // 1. Project Invariants
   for (const project of state.projects) {
     // Unique ID

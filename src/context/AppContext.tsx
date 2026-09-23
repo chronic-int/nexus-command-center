@@ -49,11 +49,13 @@ import {
   bulkRestoreTasksOp,
   compareVersions,
   createResetWorkspaceState,
+  advanceWorkspaceVersion,
 } from '../domain/workspaceDomain';
 import { hydrateAndValidateWorkspace } from '../domain/workspaceHydration';
 import {
   scheduleWorkspacePersistence,
   loadUnifiedWorkspace,
+  loadEnvelopeFromLocalStorage,
   clearWorkspaceFromIDB,
   onPersistenceStatusChange,
   getPersistenceStatus,
@@ -183,6 +185,20 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   // 1. Initial State Hydration with Scoped Storage & Runtime Sanitization
   const initialWorkspace = useMemo<WorkspaceState>(() => {
+    const envelope = loadEnvelopeFromLocalStorage();
+    if (envelope && envelope.data && envelope.data.projects && envelope.data.tasks) {
+      return hydrateAndValidateWorkspace(envelope.data, {
+        projects: INITIAL_PROJECTS,
+        tasks: INITIAL_TASKS,
+        members: INITIAL_MEMBERS,
+        pendingInvitations: [],
+        documents: INITIAL_DOCUMENTS,
+        notifications: INITIAL_NOTIFICATIONS,
+        automations: INITIAL_AUTOMATIONS,
+        activities: INITIAL_ACTIVITIES,
+      }).workspace;
+    }
+
     const raw = {
       projects: getStoredItem(STORAGE_KEYS.PROJECTS, INITIAL_PROJECTS),
       tasks: getStoredItem(STORAGE_KEYS.TASKS, INITIAL_TASKS),
@@ -310,14 +326,82 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           return;
         }
 
+        let updated = current;
+        let hadAnyConflict = false;
+
+        // 1. Task deltas with 3-way baseline merging
         if (payload.taskDeltas && payload.taskDeltas.length > 0) {
-          let updated = current;
-          let hadAnyConflict = false;
           for (const delta of payload.taskDeltas) {
-            const res = applyRemoteTaskDelta(updated, delta, payload.epoch, payload.revision);
+            const baseline = payload.taskBaselines?.find((b) => b.id === delta.id);
+            const res = applyRemoteTaskDelta(updated, delta, payload.epoch, payload.revision, baseline);
             updated = res.nextState;
             if (res.hadConflict) hadAnyConflict = true;
           }
+        }
+
+        // 2. Task deletions
+        if (payload.deletedTaskIds && payload.deletedTaskIds.length > 0) {
+          const toDelete = new Set(payload.deletedTaskIds);
+          updated = {
+            ...updated,
+            tasks: updated.tasks.filter((t) => !toDelete.has(t.id)),
+            epoch: Math.max(updated.epoch ?? 1, payload.epoch),
+            revision: Math.max(updated.revision ?? 1, payload.revision),
+          };
+        }
+
+        // 3. Project deltas
+        if (payload.projectDeltas && payload.projectDeltas.length > 0) {
+          const pMap = new Map(updated.projects.map((p) => [p.id, p]));
+          for (const p of payload.projectDeltas) {
+            pMap.set(p.id, p);
+          }
+          updated = {
+            ...updated,
+            projects: Array.from(pMap.values()),
+            epoch: Math.max(updated.epoch ?? 1, payload.epoch),
+            revision: Math.max(updated.revision ?? 1, payload.revision),
+          };
+        }
+
+        // 4. Project deletions
+        if (payload.deletedProjectIds && payload.deletedProjectIds.length > 0) {
+          const toDelete = new Set(payload.deletedProjectIds);
+          updated = {
+            ...updated,
+            projects: updated.projects.filter((p) => !toDelete.has(p.id)),
+            tasks: updated.tasks.filter((t) => !toDelete.has(t.projectId)),
+            epoch: Math.max(updated.epoch ?? 1, payload.epoch),
+            revision: Math.max(updated.revision ?? 1, payload.revision),
+          };
+        }
+
+        // 5. Document deltas
+        if (payload.documentDeltas && payload.documentDeltas.length > 0) {
+          const dMap = new Map(updated.documents.map((d) => [d.id, d]));
+          for (const d of payload.documentDeltas) {
+            dMap.set(d.id, d);
+          }
+          updated = {
+            ...updated,
+            documents: Array.from(dMap.values()),
+            epoch: Math.max(updated.epoch ?? 1, payload.epoch),
+            revision: Math.max(updated.revision ?? 1, payload.revision),
+          };
+        }
+
+        // 6. Document deletions
+        if (payload.deletedDocumentIds && payload.deletedDocumentIds.length > 0) {
+          const toDelete = new Set(payload.deletedDocumentIds);
+          updated = {
+            ...updated,
+            documents: updated.documents.filter((d) => !toDelete.has(d.id)),
+            epoch: Math.max(updated.epoch ?? 1, payload.epoch),
+            revision: Math.max(updated.revision ?? 1, payload.revision),
+          };
+        }
+
+        if (updated !== current) {
           workspaceRef.current = updated;
           setWorkspace(updated);
           setPersistenceStatus(hadAnyConflict ? 'conflict' : 'remote_update');
@@ -327,7 +411,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             }
           }, 3000);
         } else {
-          // Other mutations: reload from storage if newer
+          // If no deltas provided (or full reload event), load from storage if newer
           loadUnifiedWorkspace().then((persisted) => {
             if (persisted && compareVersions(persisted, workspaceRef.current) > 0) {
               const sanitized = hydrateAndValidateWorkspace(persisted, workspaceRef.current).workspace;
@@ -345,19 +429,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       },
       onRemoteReset: (payload) => {
         if (payload.epoch >= (workspaceRef.current.epoch ?? 1)) {
-          loadUnifiedWorkspace().then((persisted) => {
-            if (persisted) {
-              const sanitized = hydrateAndValidateWorkspace(persisted, initialWorkspace).workspace;
-              workspaceRef.current = sanitized;
-              setWorkspace(sanitized);
-              setPersistenceStatus('remote_update');
-              setTimeout(() => {
-                if (getPersistenceStatus() === 'remote_update') {
-                  setPersistenceStatus('saved');
-                }
-              }, 3000);
+          const resetState = createResetWorkspaceState(
+            { ...workspaceRef.current, epoch: payload.epoch - 1 },
+            initialWorkspace
+          );
+          workspaceRef.current = resetState;
+          setWorkspace(resetState);
+          setPersistenceStatus('remote_update');
+          setTimeout(() => {
+            if (getPersistenceStatus() === 'remote_update') {
+              setPersistenceStatus('saved');
             }
-          });
+          }, 3000);
         }
       },
     });
@@ -418,14 +501,42 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
    * guaranteeing that rapid same-tick consecutive mutations execute against the latest state
    * without losing data to stale closures.
    */
+  interface TransactionOperationResult<R> {
+    nextState: WorkspaceState;
+    result: R;
+    taskDeltas?: Task[];
+    taskBaselines?: Task[];
+    deletedTaskIds?: string[];
+    projectDeltas?: Project[];
+    deletedProjectIds?: string[];
+    documentDeltas?: Document[];
+    deletedDocumentIds?: string[];
+  }
+
+  /**
+   * Transactional transition engine:
+   * Synchronously mutates workspaceRef.current before scheduling React re-render,
+   * guaranteeing that rapid same-tick consecutive mutations execute against the latest state
+   * without losing data to stale closures.
+   * Enforces strict monotonic revision advancement across all domain and UI mutations.
+   */
   const executeTransaction = useCallback(
     <R,>(
-      op: (state: WorkspaceState) => { nextState: WorkspaceState; result: R },
-      options?: { mutationType?: string; taskDeltas?: Task[]; skipBroadcast?: boolean }
+      op: (state: WorkspaceState) => TransactionOperationResult<R>,
+      options?: { mutationType?: string; skipBroadcast?: boolean }
     ): R => {
       hasLocalMutatedSinceMountRef.current = true;
       const currentState = workspaceRef.current;
-      const { nextState, result } = op(currentState);
+      const opResult = op(currentState);
+      const rawNextState = opResult.nextState;
+      const result = opResult.result;
+
+      // Invariant: Monotonically advance revision for ANY mutation executed through executeTransaction
+      const nextState =
+        rawNextState.revision !== undefined && rawNextState.revision > (currentState.revision ?? 0)
+          ? rawNextState
+          : advanceWorkspaceVersion(currentState, rawNextState);
+
       workspaceRef.current = nextState;
       setWorkspace(nextState);
       scheduleWorkspacePersistence(nextState);
@@ -437,7 +548,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           mutationId: generateEntityId('mut'),
           mutationType: options?.mutationType || 'STATE_MUTATION',
           timestamp: new Date().toISOString(),
-          taskDeltas: options?.taskDeltas,
+          taskDeltas: opResult.taskDeltas,
+          taskBaselines: opResult.taskBaselines,
+          deletedTaskIds: opResult.deletedTaskIds,
+          projectDeltas: opResult.projectDeltas,
+          deletedProjectIds: opResult.deletedProjectIds,
+          documentDeltas: opResult.documentDeltas,
+          deletedDocumentIds: opResult.deletedDocumentIds,
         });
       }
 
@@ -465,10 +582,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // ---------------------------------------------------------------------------
   const createTask = useCallback(
     (data: Partial<Task>): Task => {
-      const newTask = executeTransaction((state) => {
-        const { state: nextState, task } = createTaskOp(state, data);
-        return { nextState, result: task };
-      });
+      const newTask = executeTransaction(
+        (state) => {
+          const { state: nextState, task } = createTaskOp(state, data);
+          return { nextState, result: task, taskDeltas: [task] };
+        },
+        { mutationType: 'CREATE_TASK' }
+      );
 
       addToast({
         type: 'success',
@@ -485,13 +605,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     (id: string, updates: Partial<Task>) => {
       executeTransaction(
         (state) => {
+          const previousTask = state.tasks.find((t) => t.id === id);
           const { state: nextState, task } = updateTaskOp(state, id, updates);
-          return { nextState, result: task };
+          return {
+            nextState,
+            result: task,
+            taskDeltas: task ? [task] : undefined,
+            taskBaselines: previousTask ? [previousTask] : undefined,
+          };
         },
-        {
-          mutationType: 'UPDATE_TASK',
-          taskDeltas: workspaceRef.current.tasks.filter((t) => t.id === id),
-        }
+        { mutationType: 'UPDATE_TASK' }
       );
 
       addToast({
@@ -506,10 +629,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const moveTaskStatus = useCallback(
     (id: string, status: TaskStatus) => {
-      const task = executeTransaction((state) => {
-        const { state: nextState, task } = moveTaskStatusOp(state, id, status);
-        return { nextState, result: task };
-      });
+      const task = executeTransaction(
+        (state) => {
+          const previousTask = state.tasks.find((t) => t.id === id);
+          const { state: nextState, task } = moveTaskStatusOp(state, id, status);
+          return {
+            nextState,
+            result: task,
+            taskDeltas: task ? [task] : undefined,
+            taskBaselines: previousTask ? [previousTask] : undefined,
+          };
+        },
+        { mutationType: 'MOVE_TASK_STATUS' }
+      );
 
       if (!task) return;
 
@@ -532,10 +664,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const deleteTask = useCallback(
     (id: string) => {
-      const deletedTask = executeTransaction((state) => {
-        const { state: nextState, deletedTask } = deleteTaskOp(state, id);
-        return { nextState, result: deletedTask };
-      });
+      const deletedTask = executeTransaction(
+        (state) => {
+          const { state: nextState, deletedTask } = deleteTaskOp(state, id);
+          return {
+            nextState,
+            result: deletedTask,
+            deletedTaskIds: deletedTask ? [deletedTask.id] : undefined,
+          };
+        },
+        { mutationType: 'DELETE_TASK' }
+      );
 
       if (!deletedTask) return;
       if (selectedTaskId === id) setSelectedTaskId(null);
@@ -548,10 +687,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         action: {
           label: 'Undo',
           onClick: () => {
-            executeTransaction((state) => {
-              const { state: restoredState } = restoreTaskOp(state, deletedTask);
-              return { nextState: restoredState, result: undefined };
-            });
+            executeTransaction(
+              (state) => {
+                const { state: restoredState, restoredTask } = restoreTaskOp(state, deletedTask);
+                return { nextState: restoredState, result: undefined, taskDeltas: [restoredTask] };
+              },
+              { mutationType: 'RESTORE_TASK' }
+            );
           },
         },
         duration: 6000,
@@ -589,50 +731,80 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         completed: false,
       };
 
-      executeTransaction((state) => {
-        const nextTasks = state.tasks.map((t) =>
-          t.id === taskId
-            ? { ...t, subtasks: [...t.subtasks, newSub], updatedAt: new Date().toISOString() }
-            : t
-        );
-        return { nextState: { ...state, tasks: nextTasks }, result: undefined };
-      });
+      executeTransaction(
+        (state) => {
+          const previousTask = state.tasks.find((t) => t.id === taskId);
+          const nextTasks = state.tasks.map((t) =>
+            t.id === taskId
+              ? { ...t, subtasks: [...t.subtasks, newSub], updatedAt: new Date().toISOString() }
+              : t
+          );
+          const updatedTask = nextTasks.find((t) => t.id === taskId);
+          return {
+            nextState: { ...state, tasks: nextTasks },
+            result: undefined,
+            taskDeltas: updatedTask ? [updatedTask] : undefined,
+            taskBaselines: previousTask ? [previousTask] : undefined,
+          };
+        },
+        { mutationType: 'UPDATE_TASK' }
+      );
     },
     [executeTransaction]
   );
 
   const toggleSubtask = useCallback(
     (taskId: string, subtaskId: string) => {
-      executeTransaction((state) => {
-        const nextTasks = state.tasks.map((t) => {
-          if (t.id !== taskId) return t;
+      executeTransaction(
+        (state) => {
+          const previousTask = state.tasks.find((t) => t.id === taskId);
+          const nextTasks = state.tasks.map((t) => {
+            if (t.id !== taskId) return t;
+            return {
+              ...t,
+              subtasks: t.subtasks.map((s) =>
+                s.id === subtaskId ? { ...s, completed: !s.completed } : s
+              ),
+              updatedAt: new Date().toISOString(),
+            };
+          });
+          const updatedTask = nextTasks.find((t) => t.id === taskId);
           return {
-            ...t,
-            subtasks: t.subtasks.map((s) =>
-              s.id === subtaskId ? { ...s, completed: !s.completed } : s
-            ),
-            updatedAt: new Date().toISOString(),
+            nextState: { ...state, tasks: nextTasks },
+            result: undefined,
+            taskDeltas: updatedTask ? [updatedTask] : undefined,
+            taskBaselines: previousTask ? [previousTask] : undefined,
           };
-        });
-        return { nextState: { ...state, tasks: nextTasks }, result: undefined };
-      });
+        },
+        { mutationType: 'UPDATE_TASK' }
+      );
     },
     [executeTransaction]
   );
 
   const deleteSubtask = useCallback(
     (taskId: string, subtaskId: string) => {
-      executeTransaction((state) => {
-        const nextTasks = state.tasks.map((t) => {
-          if (t.id !== taskId) return t;
+      executeTransaction(
+        (state) => {
+          const previousTask = state.tasks.find((t) => t.id === taskId);
+          const nextTasks = state.tasks.map((t) => {
+            if (t.id !== taskId) return t;
+            return {
+              ...t,
+              subtasks: t.subtasks.filter((s) => s.id !== subtaskId),
+              updatedAt: new Date().toISOString(),
+            };
+          });
+          const updatedTask = nextTasks.find((t) => t.id === taskId);
           return {
-            ...t,
-            subtasks: t.subtasks.filter((s) => s.id !== subtaskId),
-            updatedAt: new Date().toISOString(),
+            nextState: { ...state, tasks: nextTasks },
+            result: undefined,
+            taskDeltas: updatedTask ? [updatedTask] : undefined,
+            taskBaselines: previousTask ? [previousTask] : undefined,
           };
-        });
-        return { nextState: { ...state, tasks: nextTasks }, result: undefined };
-      });
+        },
+        { mutationType: 'UPDATE_TASK' }
+      );
     },
     [executeTransaction]
   );
@@ -647,14 +819,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         timestamp: new Date().toISOString(),
       };
 
-      executeTransaction((state) => {
-        const nextTasks = state.tasks.map((t) =>
-          t.id === taskId
-            ? { ...t, comments: [...t.comments, comment], updatedAt: new Date().toISOString() }
-            : t
-        );
-        return { nextState: { ...state, tasks: nextTasks }, result: undefined };
-      });
+      executeTransaction(
+        (state) => {
+          const previousTask = state.tasks.find((t) => t.id === taskId);
+          const nextTasks = state.tasks.map((t) =>
+            t.id === taskId
+              ? { ...t, comments: [...t.comments, comment], updatedAt: new Date().toISOString() }
+              : t
+          );
+          const updatedTask = nextTasks.find((t) => t.id === taskId);
+          return {
+            nextState: { ...state, tasks: nextTasks },
+            result: undefined,
+            taskDeltas: updatedTask ? [updatedTask] : undefined,
+            taskBaselines: previousTask ? [previousTask] : undefined,
+          };
+        },
+        { mutationType: 'UPDATE_TASK' }
+      );
 
       addToast({
         type: 'success',
@@ -667,10 +849,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const bulkUpdateTasks = useCallback(
     (ids: string[], updates: Partial<Task>) => {
-      executeTransaction((state) => {
-        const { state: nextState, updatedTasks } = bulkUpdateTasksOp(state, ids, updates);
-        return { nextState, result: updatedTasks };
-      });
+      executeTransaction(
+        (state) => {
+          const previousTasks = state.tasks.filter((t) => ids.includes(t.id));
+          const { state: nextState, updatedTasks } = bulkUpdateTasksOp(state, ids, updates);
+          return {
+            nextState,
+            result: updatedTasks,
+            taskDeltas: updatedTasks,
+            taskBaselines: previousTasks,
+          };
+        },
+        { mutationType: 'BULK_UPDATE_TASKS' }
+      );
 
       addToast({
         type: 'info',
@@ -683,10 +874,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const bulkDeleteTasks = useCallback(
     (ids: string[]) => {
-      const deletedTasks = executeTransaction((state) => {
-        const { state: nextState, deletedTasks } = bulkDeleteTasksOp(state, ids);
-        return { nextState, result: deletedTasks };
-      });
+      const deletedTasks = executeTransaction(
+        (state) => {
+          const { state: nextState, deletedTasks } = bulkDeleteTasksOp(state, ids);
+          return {
+            nextState,
+            result: deletedTasks,
+            deletedTaskIds: deletedTasks.map((t) => t.id),
+          };
+        },
+        { mutationType: 'BULK_DELETE_TASKS' }
+      );
 
       addToast({
         type: 'warning',
@@ -695,10 +893,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         action: {
           label: 'Undo',
           onClick: () => {
-            executeTransaction((state) => {
-              const { state: nextState } = bulkRestoreTasksOp(state, deletedTasks);
-              return { nextState, result: undefined };
-            });
+            executeTransaction(
+              (state) => {
+                const { state: nextState, restoredTasks } = bulkRestoreTasksOp(state, deletedTasks);
+                return { nextState, result: undefined, taskDeltas: restoredTasks };
+              },
+              { mutationType: 'BULK_RESTORE_TASKS' }
+            );
           },
         },
         duration: 6000,
@@ -712,10 +913,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // ---------------------------------------------------------------------------
   const createProject = useCallback(
     (data: Partial<Project>): Project => {
-      const newProject = executeTransaction((state) => {
-        const { state: nextState, project } = createProjectOp(state, data);
-        return { nextState, result: project };
-      });
+      const newProject = executeTransaction(
+        (state) => {
+          const { state: nextState, project } = createProjectOp(state, data);
+          return { nextState, result: project, projectDeltas: [project] };
+        },
+        { mutationType: 'CREATE_PROJECT' }
+      );
 
       addToast({
         type: 'success',
@@ -730,12 +934,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const updateProject = useCallback(
     (id: string, updates: Partial<Project>) => {
-      executeTransaction((state) => {
-        const nextProjects = state.projects.map((p) =>
-          p.id === id ? { ...p, ...updates } : p
-        );
-        return { nextState: { ...state, projects: nextProjects }, result: undefined };
-      });
+      executeTransaction(
+        (state) => {
+          const nextProjects = state.projects.map((p) =>
+            p.id === id ? { ...p, ...updates } : p
+          );
+          const updated = nextProjects.find((p) => p.id === id);
+          return {
+            nextState: { ...state, projects: nextProjects },
+            result: undefined,
+            projectDeltas: updated ? [updated] : undefined,
+          };
+        },
+        { mutationType: 'UPDATE_PROJECT' }
+      );
 
       addToast({
         type: 'info',
@@ -748,10 +960,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const deleteProject = useCallback(
     (id: string) => {
-      const deleted = executeTransaction((state) => {
-        const { state: nextState, deletedProject } = deleteProjectCascadeOp(state, id);
-        return { nextState, result: deletedProject };
-      });
+      const deleted = executeTransaction(
+        (state) => {
+          const { state: nextState, deletedProject } = deleteProjectCascadeOp(state, id);
+          return {
+            nextState,
+            result: deletedProject,
+            deletedProjectIds: deletedProject ? [deletedProject.id] : undefined,
+          };
+        },
+        { mutationType: 'DELETE_PROJECT' }
+      );
 
       if (!deleted) return;
       if (activeProjectId === id) setActiveProjectId(null);
@@ -832,10 +1051,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         tags: data.tags || ['General'],
       };
 
-      executeTransaction((state) => ({
-        nextState: { ...state, documents: [newDoc, ...state.documents] },
-        result: undefined,
-      }));
+      executeTransaction(
+        (state) => ({
+          nextState: { ...state, documents: [newDoc, ...state.documents] },
+          result: undefined,
+          documentDeltas: [newDoc],
+        }),
+        { mutationType: 'CREATE_DOCUMENT' }
+      );
 
       addToast({
         type: 'success',
@@ -849,28 +1072,37 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const updateDocument = useCallback(
     (id: string, updates: Partial<Document>) => {
-      executeTransaction((state) => ({
-        nextState: {
-          ...state,
-          documents: state.documents.map((d) =>
+      executeTransaction(
+        (state) => {
+          const nextDocs = state.documents.map((d) =>
             d.id === id ? { ...d, ...updates, lastEdited: new Date().toISOString() } : d
-          ),
+          );
+          const updated = nextDocs.find((d) => d.id === id);
+          return {
+            nextState: { ...state, documents: nextDocs },
+            result: undefined,
+            documentDeltas: updated ? [updated] : undefined,
+          };
         },
-        result: undefined,
-      }));
+        { mutationType: 'UPDATE_DOCUMENT' }
+      );
     },
     [executeTransaction]
   );
 
   const deleteDocument = useCallback(
     (id: string) => {
-      executeTransaction((state) => ({
-        nextState: {
-          ...state,
-          documents: state.documents.filter((d) => d.id !== id),
-        },
-        result: undefined,
-      }));
+      executeTransaction(
+        (state) => ({
+          nextState: {
+            ...state,
+            documents: state.documents.filter((d) => d.id !== id),
+          },
+          result: undefined,
+          deletedDocumentIds: [id],
+        }),
+        { mutationType: 'DELETE_DOCUMENT' }
+      );
 
       if (selectedDocId === id) setSelectedDocId(null);
       addToast({
@@ -883,15 +1115,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const toggleFavoriteDocument = useCallback(
     (id: string) => {
-      executeTransaction((state) => ({
-        nextState: {
-          ...state,
-          documents: state.documents.map((d) =>
+      executeTransaction(
+        (state) => {
+          const nextDocs = state.documents.map((d) =>
             d.id === id ? { ...d, isFavorite: !d.isFavorite } : d
-          ),
+          );
+          const updated = nextDocs.find((d) => d.id === id);
+          return {
+            nextState: {
+              ...state,
+              documents: nextDocs,
+            },
+            result: undefined,
+            documentDeltas: updated ? [updated] : undefined,
+          };
         },
-        result: undefined,
-      }));
+        { mutationType: 'UPDATE_DOCUMENT' }
+      );
     },
     [executeTransaction]
   );

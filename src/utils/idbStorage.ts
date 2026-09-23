@@ -1,6 +1,7 @@
 import { WorkspaceState, compareVersions } from '../domain/workspaceDomain';
 import { STORAGE_KEYS, getStoredItem, setStoredItem } from './storage';
 import { PersistedEnvelope, PersistenceStatus } from '../types';
+import { broadcastStorageCommit } from './tabSync';
 
 const DB_NAME = 'nexus_indexeddb';
 const DB_VERSION = 1;
@@ -180,12 +181,25 @@ export async function saveWorkspaceToIDB(state: WorkspaceState): Promise<boolean
               revision: current.revision ?? 1,
             };
 
-            // If candidate is strictly older or equal, do not regress durable storage
-            if (compareVersions(currentEnvelope, candidateEnvelope) > 0) {
+            // If candidate is strictly older or colliding, do not regress durable storage
+            const cmp = compareVersions(currentEnvelope, candidateEnvelope);
+            if (cmp > 0) {
               console.warn(
                 `[NEXUS IDB] Discarding stale write (candidate epoch:${candidateEnvelope.epoch} rev:${candidateEnvelope.revision} <= current epoch:${currentEnvelope.epoch} rev:${currentEnvelope.revision})`
               );
-              resolve(true); // Treated as succeeded because stored state is already fresher
+              resolve(false);
+              return;
+            }
+            if (
+              cmp === 0 &&
+              currentEnvelope.savedAt &&
+              candidateEnvelope.savedAt &&
+              currentEnvelope.savedAt !== candidateEnvelope.savedAt
+            ) {
+              console.warn(
+                `[NEXUS IDB] Concurrent same-revision collision detected (epoch:${candidateEnvelope.epoch} rev:${candidateEnvelope.revision})`
+              );
+              resolve(false);
               return;
             }
           }
@@ -328,20 +342,34 @@ async function triggerPersistCycle(): Promise<void> {
     if (idbSuccess) {
       setPersistenceStatus('saved');
       lastFailedState = null;
-    } else {
-      // Fallback to localStorage envelope with best-effort
       try {
-        const envelope = wrapWorkspaceEnvelope(stateToWrite);
-        localStorage.setItem(ENVELOPE_STORAGE_KEY, JSON.stringify(envelope));
-        // Also keep raw keys for backwards compatibility if quota allows
-        setStoredItem(STORAGE_KEYS.PROJECTS, stateToWrite.projects);
-        setStoredItem(STORAGE_KEYS.TASKS, stateToWrite.tasks);
-        setPersistenceStatus('saved');
+        broadcastStorageCommit(stateToWrite.epoch ?? 1, stateToWrite.revision ?? 1);
+      } catch {
+        // ignore
+      }
+    } else {
+      // Check if IDB already holds a newer or conflicting revision (stale rejection vs actual IDB error)
+      const currentStored = await loadRawEnvelopeFromIDB();
+      const candidateEnvelope = wrapWorkspaceEnvelope(stateToWrite);
+      if (currentStored && compareVersions(currentStored, candidateEnvelope) >= 0) {
+        // Discarded because stored state is strictly newer or colliding
+        setPersistenceStatus('conflict');
         lastFailedState = null;
-      } catch (storageErr) {
-        console.warn('[NEXUS Storage] Fallback write to localStorage failed:', storageErr);
-        setPersistenceStatus('error');
-        lastFailedState = stateToWrite;
+      } else {
+        // Fallback to localStorage envelope with best-effort
+        try {
+          const envelope = wrapWorkspaceEnvelope(stateToWrite);
+          localStorage.setItem(ENVELOPE_STORAGE_KEY, JSON.stringify(envelope));
+          // Also keep raw keys for backwards compatibility if quota allows
+          setStoredItem(STORAGE_KEYS.PROJECTS, stateToWrite.projects);
+          setStoredItem(STORAGE_KEYS.TASKS, stateToWrite.tasks);
+          setPersistenceStatus('saved');
+          lastFailedState = null;
+        } catch (storageErr) {
+          console.warn('[NEXUS Storage] Fallback write to localStorage failed:', storageErr);
+          setPersistenceStatus('error');
+          lastFailedState = stateToWrite;
+        }
       }
     }
   } catch (err) {

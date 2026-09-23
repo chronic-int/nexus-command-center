@@ -47,6 +47,10 @@ export interface WorkspaceDefaults {
  */
 export function hydrateAndValidateWorkspace(
   raw: Partial<{
+    schemaVersion: unknown;
+    epoch: unknown;
+    revision: unknown;
+    lastSavedAt: unknown;
     projects: unknown;
     tasks: unknown;
     members: unknown;
@@ -426,7 +430,31 @@ export function hydrateAndValidateWorkspace(
     workload: calculateMemberWorkload(tasks, m.id),
   }));
 
+  const schemaVersion =
+    typeof raw.schemaVersion === 'number' && Number.isInteger(raw.schemaVersion) && raw.schemaVersion > 0
+      ? raw.schemaVersion
+      : 1;
+
+  const epoch =
+    typeof raw.epoch === 'number' && Number.isInteger(raw.epoch) && raw.epoch > 0
+      ? raw.epoch
+      : 1;
+
+  const revision =
+    typeof raw.revision === 'number' && Number.isInteger(raw.revision) && raw.revision >= 0
+      ? raw.revision
+      : 1;
+
+  const lastSavedAt =
+    typeof raw.lastSavedAt === 'string'
+      ? raw.lastSavedAt
+      : undefined;
+
   const workspace: WorkspaceState = {
+    schemaVersion,
+    epoch,
+    revision,
+    lastSavedAt,
     projects,
     tasks,
     members,

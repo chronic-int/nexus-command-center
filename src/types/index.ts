@@ -216,6 +216,12 @@ export interface MutationBroadcastPayload {
   mutationType: string;
   timestamp: string;
   taskDeltas?: Task[];
+  taskBaselines?: Task[];
+  deletedTaskIds?: string[];
+  projectDeltas?: Project[];
+  deletedProjectIds?: string[];
+  documentDeltas?: Document[];
+  deletedDocumentIds?: string[];
   entityId?: string;
 }
 

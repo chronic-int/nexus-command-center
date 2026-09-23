@@ -47,8 +47,12 @@ export function advanceWorkspaceVersion(
   prevState: WorkspaceState,
   overrides?: Partial<WorkspaceState>
 ): WorkspaceState {
-  const epoch = prevState.epoch ?? 1;
-  const revision = (prevState.revision ?? 0) + 1;
+  const epoch = overrides?.epoch ?? prevState.epoch ?? 1;
+  const currentRev = prevState.revision ?? 0;
+  const revision =
+    overrides?.revision !== undefined && overrides.revision > currentRev
+      ? overrides.revision
+      : currentRev + 1;
   return {
     ...prevState,
     ...overrides,
