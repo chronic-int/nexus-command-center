@@ -8,6 +8,7 @@ interface ConfirmationModalProps {
   onConfirm: () => void;
   title: string;
   description: string;
+  children?: React.ReactNode;
   confirmLabel?: string;
   cancelLabel?: string;
   variant?: 'danger' | 'warning';
@@ -20,6 +21,7 @@ export const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
   onConfirm,
   title,
   description,
+  children,
   confirmLabel = 'Confirm Action',
   cancelLabel = 'Cancel',
   variant = 'danger',
@@ -53,6 +55,7 @@ export const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1.5 leading-relaxed">
             {description}
           </p>
+          {children && <div className="mt-3">{children}</div>}
 
           <div className="flex items-center justify-end gap-2.5 mt-5">
             <button

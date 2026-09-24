@@ -10,6 +10,7 @@ import {
   Inbox,
   Zap,
   Settings,
+  User,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -23,6 +24,7 @@ export const Sidebar: React.FC = () => {
   const {
     activeView,
     setActiveView,
+    workspaceSettings,
     activeProjectId,
     setActiveProjectId,
     projects,
@@ -60,6 +62,7 @@ export const Sidebar: React.FC = () => {
   const secondaryNav = [
     { id: 'inbox', label: 'Inbox', icon: Inbox, badge: unreadNotificationsCount },
     { id: 'automations', label: 'Automations', icon: Zap },
+    { id: 'profile', label: 'Profile', icon: User },
     { id: 'settings', label: 'Settings', icon: Settings },
   ];
 
@@ -126,7 +129,7 @@ export const Sidebar: React.FC = () => {
             >
               <div className="min-w-0 flex-1">
                 <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">
-                  {activeWorkspace}
+                  {workspaceSettings?.name || activeWorkspace}
                 </p>
                 <p className="text-[10px] text-slate-400">Enterprise Workspace</p>
               </div>

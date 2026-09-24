@@ -5,6 +5,7 @@ interface AvatarProps {
   member?: TeamMember;
   name?: string;
   avatarUrl?: string;
+  status?: string;
   size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
   showStatus?: boolean;
   className?: string;
@@ -14,18 +15,26 @@ export const Avatar: React.FC<AvatarProps> = ({
   member,
   name,
   avatarUrl,
+  status,
   size = 'md',
   showStatus = false,
   className = '',
 }) => {
+  const [imageError, setImageError] = React.useState(false);
   const displayName = member?.name || name || 'User';
   const url = member?.avatar || avatarUrl;
+
+  React.useEffect(() => {
+    setImageError(false);
+  }, [url]);
+
   const initials = displayName
     .split(' ')
+    .filter(Boolean)
     .map(p => p[0])
     .slice(0, 2)
     .join('')
-    .toUpperCase();
+    .toUpperCase() || 'U';
 
   const sizeClasses = {
     xs: 'w-5 h-5 text-[10px]',
@@ -43,35 +52,37 @@ export const Avatar: React.FC<AvatarProps> = ({
     xl: 'w-3.5 h-3.5',
   }[size];
 
+  const activeAvailability = status || member?.availability || 'Active';
   const statusColor = {
     Active: 'bg-emerald-500 ring-white dark:ring-[#0f141f]',
     'In a meeting': 'bg-amber-500 ring-white dark:ring-[#0f141f]',
     Away: 'bg-amber-400 ring-white dark:ring-[#0f141f]',
     Offline: 'bg-slate-400 ring-white dark:ring-[#0f141f]',
-  }[member?.availability || 'Active'];
+  }[activeAvailability] || 'bg-emerald-500 ring-white dark:ring-[#0f141f]';
 
   return (
     <div className={`relative inline-flex items-center justify-center shrink-0 ${className}`}>
-      {url ? (
+      {url && !imageError ? (
         <img
           src={url}
           alt={displayName}
           className={`${sizeClasses} rounded-full object-cover ring-1 ring-black/5 dark:ring-white/10`}
-          onError={(e) => {
-            // fallback to initials on broken image
-            e.currentTarget.style.display = 'none';
-          }}
+          onError={() => setImageError(true)}
         />
       ) : (
-        <div className={`${sizeClasses} rounded-full bg-gradient-to-tr from-brand-600 to-indigo-400 text-white font-medium flex items-center justify-center`}>
+        <div
+          data-testid="avatar-fallback"
+          className={`${sizeClasses} rounded-full bg-gradient-to-tr from-brand-600 to-indigo-400 text-white font-medium flex items-center justify-center`}
+        >
           {initials}
         </div>
       )}
 
-      {showStatus && member && (
+      {showStatus && (member || status) && (
         <span
+          data-testid="avatar-status-dot"
           className={`absolute bottom-0 right-0 rounded-full ring-2 ${statusDotSize} ${statusColor}`}
-          title={`${member.name} (${member.availability})`}
+          title={`${displayName} (${activeAvailability})`}
         />
       )}
     </div>

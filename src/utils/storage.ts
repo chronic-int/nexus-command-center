@@ -19,6 +19,11 @@ export const STORAGE_KEYS = {
   SIDEBAR: `${NEXUS_KEY_PREFIX}sidebar_collapsed`,
   DISMISSED_INSIGHTS: `${NEXUS_KEY_PREFIX}dismissed_insights_v2`,
   USEFUL_INSIGHTS: `${NEXUS_KEY_PREFIX}useful_insights_v2`,
+  USER_PROFILE: `${NEXUS_KEY_PREFIX}user_profile_v1`,
+  WORKSPACE_SETTINGS: `${NEXUS_KEY_PREFIX}workspace_settings_v1`,
+  PRODUCTIVITY_SETTINGS: `${NEXUS_KEY_PREFIX}productivity_settings_v1`,
+  NOTIFICATION_PREFERENCES: `${NEXUS_KEY_PREFIX}notification_preferences_v1`,
+  REDUCED_MOTION: `${NEXUS_KEY_PREFIX}reduced_motion_v1`,
 };
 
 export function getStoredItem<T>(key: string, fallback: T): T {

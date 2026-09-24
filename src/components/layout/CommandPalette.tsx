@@ -17,6 +17,12 @@ import {
   SlidersHorizontal,
   RotateCcw,
   ArrowRight,
+  User,
+  Settings,
+  Download,
+  Keyboard,
+  HardDrive,
+  Inbox,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 
@@ -38,6 +44,9 @@ export const CommandPalette: React.FC = () => {
     setIsQuickCreateOpen,
     setQuickCreateDefaultTab,
     setIsNotificationDrawerOpen,
+    setIsShortcutsModalOpen,
+    setSettingsTab,
+    exportWorkspaceData,
     theme,
     setTheme,
     density,
@@ -182,17 +191,82 @@ export const CommandPalette: React.FC = () => {
       },
     },
     {
-      id: 'nav-automations',
-      title: 'Go to Automations',
+      id: 'nav-profile',
+      title: 'Go to User Profile',
       category: 'Navigation',
-      icon: Zap,
+      icon: User,
       action: () => {
-        setActiveView('automations');
+        setActiveView('profile');
+        setActiveProjectId(null);
+      },
+    },
+    {
+      id: 'nav-my-tasks',
+      title: 'Go to My Tasks',
+      category: 'Navigation',
+      icon: CheckSquare,
+      action: () => {
+        setActiveView('my-tasks');
+        setActiveProjectId(null);
+      },
+    },
+    {
+      id: 'nav-inbox',
+      title: 'Go to Inbox & Notifications',
+      category: 'Navigation',
+      icon: Inbox,
+      action: () => {
+        setActiveView('inbox');
+        setActiveProjectId(null);
+      },
+    },
+    {
+      id: 'nav-settings',
+      title: 'Go to Workspace Settings',
+      category: 'Navigation',
+      icon: Settings,
+      action: () => {
+        setActiveView('settings');
         setActiveProjectId(null);
       },
     },
 
-    // Preferences
+    // Preferences & Workspace Management
+    {
+      id: 'settings-appearance',
+      title: 'Open Appearance & Theme Settings',
+      category: 'Preferences',
+      icon: SlidersHorizontal,
+      action: () => {
+        setSettingsTab('appearance');
+        setActiveView('settings');
+      },
+    },
+    {
+      id: 'settings-data',
+      title: 'Open Data & Storage Settings',
+      category: 'Preferences',
+      icon: HardDrive,
+      action: () => {
+        setSettingsTab('data');
+        setActiveView('settings');
+      },
+    },
+    {
+      id: 'export-workspace',
+      title: 'Export Workspace Data (JSON)',
+      category: 'Actions',
+      icon: Download,
+      action: () => exportWorkspaceData(),
+    },
+    {
+      id: 'view-shortcuts',
+      title: 'View Keyboard Shortcuts',
+      category: 'Preferences',
+      icon: Keyboard,
+      shortcut: '?',
+      action: () => setIsShortcutsModalOpen(true),
+    },
     {
       id: 'toggle-theme',
       title: `Switch to ${theme === 'dark' ? 'Light' : 'Dark'} Theme`,
@@ -216,7 +290,7 @@ export const CommandPalette: React.FC = () => {
     },
     {
       id: 'reset-demo',
-      title: 'Reset Demo Data to Defaults',
+      title: 'Reset Workspace to Defaults',
       category: 'Preferences',
       icon: RotateCcw,
       action: () => resetDemoData(),

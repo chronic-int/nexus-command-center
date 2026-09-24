@@ -33,6 +33,7 @@ import { DocumentsView } from '../documents/DocumentsView';
 import { InboxView } from '../inbox/InboxView';
 import { AutomationsView } from '../automations/AutomationsView';
 import { SettingsView } from '../settings/SettingsView';
+import { ProfileView } from '../profile/ProfileView';
 
 export const AppShell: React.FC = () => {
   const {
@@ -67,6 +68,8 @@ export const AppShell: React.FC = () => {
         return <AutomationsView />;
       case 'settings':
         return <SettingsView />;
+      case 'profile':
+        return <ProfileView />;
       default:
         return <OverviewDashboard />;
     }

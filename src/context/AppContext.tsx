@@ -14,8 +14,13 @@ import {
   ViewTab,
   ThemeMode,
   DensityMode,
+  ReducedMotionMode,
   ToastMessage,
   PersistenceStatus,
+  UserProfile,
+  WorkspaceSettings,
+  ProductivitySettings,
+  NotificationPreferences,
 } from '../types';
 import {
   INITIAL_MEMBERS,
@@ -120,6 +125,38 @@ interface AppContextType {
   setTheme: (theme: ThemeMode) => void;
   density: DensityMode;
   setDensity: (density: DensityMode) => void;
+  reducedMotion: ReducedMotionMode;
+  setReducedMotion: (mode: ReducedMotionMode) => void;
+
+  // Profile & Personalization
+  userProfile: UserProfile;
+  updateUserProfile: (updates: Partial<UserProfile>) => void;
+
+  // Workspace Settings
+  workspaceSettings: WorkspaceSettings;
+  updateWorkspaceSettings: (updates: Partial<WorkspaceSettings>) => void;
+
+  // Productivity Settings
+  productivitySettings: ProductivitySettings;
+  updateProductivitySettings: (updates: Partial<ProductivitySettings>) => void;
+
+  // Notification Preferences
+  notificationPreferences: NotificationPreferences;
+  updateNotificationPreferences: (updates: Partial<NotificationPreferences>) => void;
+
+  // Settings subtab navigation
+  settingsTab: string;
+  setSettingsTab: (tab: string) => void;
+
+  // Export / Import
+  exportWorkspaceData: () => void;
+  validateImportPayload: (jsonString: string) => {
+    valid: boolean;
+    error?: string;
+    counts?: Record<string, number>;
+    payload?: any;
+  };
+  importWorkspaceData: (payload: any) => Promise<{ success: boolean; error?: string }>;
 
   // Toasts
   toasts: ToastMessage[];
@@ -181,6 +218,51 @@ interface AppContextType {
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
+
+export const DEFAULT_USER_PROFILE: UserProfile = {
+  id: 'user-1',
+  name: 'Alex Rivera',
+  email: 'alex.rivera@nexus.io',
+  role: 'Staff Product Engineer',
+  department: 'Engineering',
+  bio: 'Lead architect for core infrastructure and real-time distributed state engines.',
+  avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
+  availability: 'Active',
+  timezone: 'America/New_York (UTC-5)',
+  workingHours: '09:00 - 17:00 EST',
+  language: 'English (US)',
+};
+
+export const DEFAULT_WORKSPACE_SETTINGS: WorkspaceSettings = {
+  name: 'Acme Core Platform',
+  description: 'Mission-critical enterprise services and distributed state command center',
+  projectKeyPrefix: 'CORE',
+  workingDays: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'],
+  timezone: 'America/New_York (UTC-5)',
+  defaultTaskPriority: 'Medium',
+  autoAssignCreator: false,
+};
+
+export const DEFAULT_PRODUCTIVITY_SETTINGS: ProductivitySettings = {
+  defaultLandingPage: 'overview',
+  defaultProjectTab: 'Board',
+  startOfWeek: 'monday',
+  quickCreateAutoOpen: true,
+  keyboardShortcutsEnabled: true,
+};
+
+export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
+  inAppNotifications: true,
+  browserNotifications: false,
+  categories: {
+    assignments: true,
+    mentions: true,
+    deadlines: true,
+    projectUpdates: true,
+    automationEvents: true,
+    workspaceActivity: false,
+  },
+};
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   // 1. Initial State Hydration with Scoped Storage & Runtime Sanitization
@@ -248,14 +330,46 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [density, setDensityState] = useState<DensityMode>(() =>
     getStoredItem(STORAGE_KEYS.DENSITY, 'comfortable')
   );
+  const [reducedMotion, setReducedMotionState] = useState<ReducedMotionMode>(() =>
+    getStoredItem(STORAGE_KEYS.REDUCED_MOTION, 'system')
+  );
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() =>
     getStoredItem(STORAGE_KEYS.SIDEBAR, false)
   );
 
+  // Profile & Personalization
+  const [userProfile, setUserProfileState] = useState<UserProfile>(() =>
+    getStoredItem(STORAGE_KEYS.USER_PROFILE, DEFAULT_USER_PROFILE)
+  );
+
+  // Workspace Settings
+  const [workspaceSettings, setWorkspaceSettingsState] = useState<WorkspaceSettings>(() =>
+    getStoredItem(STORAGE_KEYS.WORKSPACE_SETTINGS, DEFAULT_WORKSPACE_SETTINGS)
+  );
+
+  // Productivity Settings
+  const [productivitySettings, setProductivitySettingsState] = useState<ProductivitySettings>(() =>
+    getStoredItem(STORAGE_KEYS.PRODUCTIVITY_SETTINGS, DEFAULT_PRODUCTIVITY_SETTINGS)
+  );
+
+  // Notification Preferences
+  const [notificationPreferences, setNotificationPreferencesState] = useState<NotificationPreferences>(() =>
+    getStoredItem(STORAGE_KEYS.NOTIFICATION_PREFERENCES, DEFAULT_NOTIFICATION_PREFERENCES)
+  );
+
+  // Settings active tab
+  const [settingsTab, setSettingsTab] = useState<string>('profile');
+
   // Navigation state
-  const [activeView, setActiveView] = useState<string>('overview');
+  const [activeView, setActiveView] = useState<string>(() => {
+    const prod = getStoredItem(STORAGE_KEYS.PRODUCTIVITY_SETTINGS, DEFAULT_PRODUCTIVITY_SETTINGS);
+    return prod.defaultLandingPage || 'overview';
+  });
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
-  const [projectTab, setProjectTab] = useState<ViewTab>('Board');
+  const [projectTab, setProjectTab] = useState<ViewTab>(() => {
+    const prod = getStoredItem(STORAGE_KEYS.PRODUCTIVITY_SETTINGS, DEFAULT_PRODUCTIVITY_SETTINGS);
+    return prod.defaultProjectTab || 'Board';
+  });
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [selectedMemberId, setSelectedMemberId] = useState<string | null>(null);
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
@@ -494,6 +608,285 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const removeToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
+
+  // Reduced Motion
+  const setReducedMotion = useCallback((mode: ReducedMotionMode) => {
+    setReducedMotionState(mode);
+    setStoredItem(STORAGE_KEYS.REDUCED_MOTION, mode);
+  }, []);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    if (reducedMotion === 'always') {
+      root.classList.add('reduce-motion');
+    } else if (reducedMotion === 'never') {
+      root.classList.remove('reduce-motion');
+    } else {
+      const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      root.classList.toggle('reduce-motion', prefersReduced);
+    }
+  }, [reducedMotion]);
+
+  // Profile management & member synchronization
+  const updateUserProfile = useCallback((updates: Partial<UserProfile>) => {
+    setUserProfileState((prev) => {
+      const nextProfile: UserProfile = { ...prev, ...updates };
+      setStoredItem(STORAGE_KEYS.USER_PROFILE, nextProfile);
+
+      // Synchronize with members in WorkspaceState if matching member exists
+      const targetMemberId = nextProfile.id || 'user-1';
+      setWorkspace((prevWs) => {
+        const memberIdx = prevWs.members.findIndex((m) => m.id === targetMemberId);
+        if (memberIdx === -1) return prevWs;
+
+        const updatedMembers = [...prevWs.members];
+        const existing = updatedMembers[memberIdx];
+        updatedMembers[memberIdx] = {
+          ...existing,
+          name: nextProfile.name,
+          email: nextProfile.email,
+          role: nextProfile.role,
+          department: nextProfile.department,
+          avatar: nextProfile.avatar,
+          availability: nextProfile.availability,
+          bio: nextProfile.bio,
+          timezone: nextProfile.timezone,
+          workingHours: nextProfile.workingHours,
+          language: nextProfile.language,
+        };
+
+        const nextWs = advanceWorkspaceVersion(prevWs, {
+          members: updatedMembers,
+        });
+        workspaceRef.current = nextWs;
+        scheduleWorkspacePersistence(nextWs, 150);
+        return nextWs;
+      });
+
+      return nextProfile;
+    });
+  }, []);
+
+  // Workspace Settings
+  const updateWorkspaceSettings = useCallback((updates: Partial<WorkspaceSettings>) => {
+    setWorkspaceSettingsState((prev) => {
+      const next = { ...prev, ...updates };
+      setStoredItem(STORAGE_KEYS.WORKSPACE_SETTINGS, next);
+      return next;
+    });
+  }, []);
+
+  // Productivity Settings
+  const updateProductivitySettings = useCallback((updates: Partial<ProductivitySettings>) => {
+    setProductivitySettingsState((prev) => {
+      const next = { ...prev, ...updates };
+      setStoredItem(STORAGE_KEYS.PRODUCTIVITY_SETTINGS, next);
+      return next;
+    });
+  }, []);
+
+  // Notification Preferences
+  const updateNotificationPreferences = useCallback((updates: Partial<NotificationPreferences>) => {
+    setNotificationPreferencesState((prev) => {
+      const next = {
+        ...prev,
+        ...updates,
+        categories: {
+          ...prev.categories,
+          ...(updates.categories || {}),
+        },
+      };
+      setStoredItem(STORAGE_KEYS.NOTIFICATION_PREFERENCES, next);
+      return next;
+    });
+  }, []);
+
+  // Export workspace as structured JSON
+  const exportWorkspaceData = useCallback(() => {
+    const currentWs = workspaceRef.current;
+    const exportEnvelope = {
+      schemaVersion: 2,
+      exportedAt: new Date().toISOString(),
+      client: 'NEXUS Command Center v2.5',
+      workspace: {
+        projects: currentWs.projects,
+        tasks: currentWs.tasks,
+        members: currentWs.members,
+        documents: currentWs.documents,
+        notifications: currentWs.notifications,
+        automations: currentWs.automations,
+        activities: currentWs.activities,
+        pendingInvitations: currentWs.pendingInvitations,
+      },
+      userProfile,
+      workspaceSettings,
+      productivitySettings,
+      notificationPreferences,
+      appearanceSettings: {
+        theme,
+        density,
+        sidebarDefaultCollapsed: sidebarCollapsed,
+        reducedMotion,
+      },
+    };
+
+    const jsonStr = JSON.stringify(exportEnvelope, null, 2);
+    const blob = new Blob([jsonStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const dateStamp = new Date().toISOString().slice(0, 10);
+    a.href = url;
+    a.download = `nexus-workspace-${dateStamp}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    addToast({
+      type: 'success',
+      title: 'Workspace Exported',
+      message: `Exported ${currentWs.projects.length} projects and ${currentWs.tasks.length} tasks to JSON.`,
+      duration: 3500,
+    });
+  }, [userProfile, workspaceSettings, productivitySettings, notificationPreferences, theme, density, sidebarCollapsed, reducedMotion, addToast]);
+
+  // Validate import payload
+  const validateImportPayload = useCallback((jsonString: string): {
+    valid: boolean;
+    error?: string;
+    counts?: Record<string, number>;
+    payload?: any;
+  } => {
+    try {
+      const parsed = JSON.parse(jsonString);
+      if (!parsed || typeof parsed !== 'object') {
+        return { valid: false, error: 'The uploaded file is not a valid JSON object.' };
+      }
+
+      const wsData = parsed.workspace || parsed.data || parsed;
+      if (!wsData || typeof wsData !== 'object') {
+        return { valid: false, error: 'No workspace dataset found in the uploaded file.' };
+      }
+
+      const projects = Array.isArray(wsData.projects) ? wsData.projects : null;
+      const tasks = Array.isArray(wsData.tasks) ? wsData.tasks : null;
+
+      if (!projects && !tasks) {
+        return {
+          valid: false,
+          error: 'Required workspace collections ("projects" or "tasks") are missing.',
+        };
+      }
+
+      const members = Array.isArray(wsData.members) ? wsData.members : [];
+      const documents = Array.isArray(wsData.documents) ? wsData.documents : [];
+      const automations = Array.isArray(wsData.automations) ? wsData.automations : [];
+      const activities = Array.isArray(wsData.activities) ? wsData.activities : [];
+
+      return {
+        valid: true,
+        counts: {
+          projects: (projects || []).length,
+          tasks: (tasks || []).length,
+          members: members.length,
+          documents: documents.length,
+          automations: automations.length,
+          activities: activities.length,
+        },
+        payload: parsed,
+      };
+    } catch (err: any) {
+      return {
+        valid: false,
+        error: `JSON parsing error: ${err?.message || 'Invalid syntax'}`,
+      };
+    }
+  }, []);
+
+  // Import workspace data
+  const importWorkspaceData = useCallback(async (payload: any): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const wsData = payload.workspace || payload.data || payload;
+
+      const hydration = hydrateAndValidateWorkspace(wsData, {
+        projects: INITIAL_PROJECTS,
+        tasks: INITIAL_TASKS,
+        members: INITIAL_MEMBERS,
+        pendingInvitations: [],
+        documents: INITIAL_DOCUMENTS,
+        notifications: INITIAL_NOTIFICATIONS,
+        automations: INITIAL_AUTOMATIONS,
+        activities: INITIAL_ACTIVITIES,
+      });
+
+      const currentEpoch = workspaceRef.current.epoch ?? 1;
+      const importedWs: WorkspaceState = {
+        ...hydration.workspace,
+        schemaVersion: 1,
+        epoch: currentEpoch + 1,
+        revision: 1,
+        lastSavedAt: new Date().toISOString(),
+      };
+
+      workspaceRef.current = importedWs;
+      setWorkspace(importedWs);
+      scheduleWorkspacePersistence(importedWs, 0);
+      broadcastWorkspaceReset(importedWs.epoch ?? 2, importedWs.revision ?? 1);
+
+      if (payload.userProfile && typeof payload.userProfile === 'object') {
+        const restoredProfile: UserProfile = {
+          ...DEFAULT_USER_PROFILE,
+          ...payload.userProfile,
+        };
+        setUserProfileState(restoredProfile);
+        setStoredItem(STORAGE_KEYS.USER_PROFILE, restoredProfile);
+      }
+
+      if (payload.workspaceSettings && typeof payload.workspaceSettings === 'object') {
+        const restoredWsSettings: WorkspaceSettings = {
+          ...DEFAULT_WORKSPACE_SETTINGS,
+          ...payload.workspaceSettings,
+        };
+        setWorkspaceSettingsState(restoredWsSettings);
+        setStoredItem(STORAGE_KEYS.WORKSPACE_SETTINGS, restoredWsSettings);
+      }
+
+      if (payload.productivitySettings && typeof payload.productivitySettings === 'object') {
+        const restoredProd: ProductivitySettings = {
+          ...DEFAULT_PRODUCTIVITY_SETTINGS,
+          ...payload.productivitySettings,
+        };
+        setProductivitySettingsState(restoredProd);
+        setStoredItem(STORAGE_KEYS.PRODUCTIVITY_SETTINGS, restoredProd);
+      }
+
+      if (payload.notificationPreferences && typeof payload.notificationPreferences === 'object') {
+        const restoredNotifs: NotificationPreferences = {
+          ...DEFAULT_NOTIFICATION_PREFERENCES,
+          ...payload.notificationPreferences,
+        };
+        setNotificationPreferencesState(restoredNotifs);
+        setStoredItem(STORAGE_KEYS.NOTIFICATION_PREFERENCES, restoredNotifs);
+      }
+
+      if (payload.appearanceSettings && typeof payload.appearanceSettings === 'object') {
+        if (payload.appearanceSettings.theme) setTheme(payload.appearanceSettings.theme);
+        if (payload.appearanceSettings.density) setDensity(payload.appearanceSettings.density);
+        if (payload.appearanceSettings.reducedMotion) setReducedMotion(payload.appearanceSettings.reducedMotion);
+      }
+
+      addToast({
+        type: 'success',
+        title: 'Workspace Restored',
+        message: 'Successfully imported and verified workspace data.',
+        duration: 3500,
+      });
+
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Failed to import workspace data' };
+    }
+  }, [addToast, setDensity, setReducedMotion, setTheme]);
 
   /**
    * Transactional transition engine:
@@ -1405,6 +1798,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setDismissedInsightIds([]);
     setUsefulInsightCounts({});
 
+    setUserProfileState(DEFAULT_USER_PROFILE);
+    setWorkspaceSettingsState(DEFAULT_WORKSPACE_SETTINGS);
+    setProductivitySettingsState(DEFAULT_PRODUCTIVITY_SETTINGS);
+    setNotificationPreferencesState(DEFAULT_NOTIFICATION_PREFERENCES);
+    setReducedMotionState('system');
+
     addToast({
       type: 'success',
       title: 'Workspace Reset Complete',
@@ -1459,6 +1858,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setTheme,
       density,
       setDensity,
+      reducedMotion,
+      setReducedMotion,
+
+      userProfile,
+      updateUserProfile,
+      workspaceSettings,
+      updateWorkspaceSettings,
+      productivitySettings,
+      updateProductivitySettings,
+      notificationPreferences,
+      updateNotificationPreferences,
+      settingsTab,
+      setSettingsTab,
+
+      exportWorkspaceData,
+      validateImportPayload,
+      importWorkspaceData,
 
       toasts,
       addToast,
@@ -1529,6 +1945,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setTheme,
       density,
       setDensity,
+      reducedMotion,
+      setReducedMotion,
+      userProfile,
+      updateUserProfile,
+      workspaceSettings,
+      updateWorkspaceSettings,
+      productivitySettings,
+      updateProductivitySettings,
+      notificationPreferences,
+      updateNotificationPreferences,
+      settingsTab,
+      setSettingsTab,
+      exportWorkspaceData,
+      validateImportPayload,
+      importWorkspaceData,
       toasts,
       addToast,
       removeToast,

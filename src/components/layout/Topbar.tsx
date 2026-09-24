@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { Avatar } from '../common/Avatar';
+import { UserMenu } from './UserMenu';
 
 export const Topbar: React.FC = () => {
   const {
@@ -164,6 +165,7 @@ export const Topbar: React.FC = () => {
       inbox: 'Inbox & Notifications',
       automations: 'Automations Engine',
       settings: 'Settings & Workspace',
+      profile: 'User Profile & Responsibilities',
     };
 
     return (
@@ -444,19 +446,8 @@ export const Topbar: React.FC = () => {
           )}
         </button>
 
-        {/* User Profile Avatar */}
-        <div
-          onClick={() => setActiveView('settings')}
-          className="cursor-pointer pl-1 flex items-center gap-2 group"
-          title="Alex Rivera (Settings)"
-        >
-          <Avatar
-            name="Alex Rivera"
-            avatarUrl="https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80"
-            size="sm"
-            showStatus={true}
-          />
-        </div>
+        {/* User Profile Menu */}
+        <UserMenu />
       </div>
     </header>
   );

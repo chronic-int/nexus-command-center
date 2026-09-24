@@ -6,6 +6,7 @@ export type NotificationCategory = 'Assignments' | 'Mentions' | 'Deadlines' | 'S
 export type ViewTab = 'Overview' | 'Board' | 'List' | 'Timeline' | 'Files' | 'Activity';
 export type DensityMode = 'comfortable' | 'compact';
 export type ThemeMode = 'dark' | 'light' | 'system';
+export type ReducedMotionMode = 'system' | 'always' | 'never';
 
 export interface Subtask {
   id: string;
@@ -77,6 +78,9 @@ export interface TeamMember {
   availability: MemberAvailability;
   currentProjectId: string;
   bio?: string;
+  timezone?: string;
+  workingHours?: string;
+  language?: string;
 }
 
 export interface PendingInvitation {
@@ -182,6 +186,60 @@ export interface UserPreferences {
   notificationsEnabled: boolean;
   emailDigest: boolean;
   soundEffects: boolean;
+}
+
+export interface UserProfile {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  department: string;
+  bio: string;
+  avatar: string;
+  availability: MemberAvailability;
+  timezone: string;
+  workingHours: string;
+  language: string;
+}
+
+export interface WorkspaceSettings {
+  name: string;
+  description: string;
+  projectKeyPrefix: string;
+  workingDays: string[];
+  timezone: string;
+  defaultTaskPriority: TaskPriority;
+  autoAssignCreator: boolean;
+}
+
+export interface ProductivitySettings {
+  defaultLandingPage: string;
+  defaultProjectTab: ViewTab;
+  startOfWeek: 'monday' | 'sunday';
+  quickCreateAutoOpen: boolean;
+  keyboardShortcutsEnabled: boolean;
+}
+
+export interface NotificationCategoryPreferences {
+  assignments: boolean;
+  mentions: boolean;
+  deadlines: boolean;
+  projectUpdates: boolean;
+  automationEvents: boolean;
+  workspaceActivity: boolean;
+}
+
+export interface NotificationPreferences {
+  inAppNotifications: boolean;
+  browserNotifications: boolean;
+  categories: NotificationCategoryPreferences;
+}
+
+export interface AppearanceSettings {
+  theme: ThemeMode;
+  density: DensityMode;
+  sidebarDefaultCollapsed: boolean;
+  reducedMotion: ReducedMotionMode;
 }
 
 export interface ToastMessage {
