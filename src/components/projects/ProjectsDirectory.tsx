@@ -17,8 +17,7 @@ export const ProjectsDirectory: React.FC = () => {
     projects,
     tasks,
     members,
-    setActiveProjectId,
-    setProjectTab,
+    openProject,
     setIsQuickCreateOpen,
     setQuickCreateDefaultTab,
   } = useApp();
@@ -41,8 +40,7 @@ export const ProjectsDirectory: React.FC = () => {
   });
 
   const handleOpenProject = (id: string) => {
-    setActiveProjectId(id);
-    setProjectTab('Board');
+    openProject(id);
   };
 
   return (

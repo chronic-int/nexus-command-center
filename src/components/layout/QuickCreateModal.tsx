@@ -1,18 +1,13 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   CheckSquare,
   FolderKanban,
   FileText,
   UserPlus,
-  Calendar,
-  Flag,
-  User,
-  Tags,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { Modal } from '../common/Modal';
 import { TaskPriority, TaskStatus } from '../../types';
-import { getTodayString } from '../../utils/dateUtils';
 
 export const QuickCreateModal: React.FC = () => {
   const {
@@ -21,6 +16,13 @@ export const QuickCreateModal: React.FC = () => {
     quickCreateDefaultTab,
     projects,
     members,
+    activeProjectId,
+    workspaceSettings,
+    userProfile,
+    productivitySettings,
+    openProject,
+    setActiveView,
+    setSelectedDocId,
     createTask,
     createProject,
     createDocument,
@@ -31,16 +33,16 @@ export const QuickCreateModal: React.FC = () => {
 
   const [activeTab, setActiveTab] = useState<'task' | 'project' | 'document' | 'invite'>(quickCreateDefaultTab);
 
-  useEffect(() => {
-    setActiveTab(quickCreateDefaultTab);
-  }, [quickCreateDefaultTab, isQuickCreateOpen]);
-
   // Task Form State
   const [taskTitle, setTaskTitle] = useState('');
   const [taskDescription, setTaskDescription] = useState('');
-  const [taskProjectId, setTaskProjectId] = useState(projects[0]?.id || 'proj-1');
-  const [taskAssigneeId, setTaskAssigneeId] = useState(members[0]?.id || 'user-1');
-  const [taskPriority, setTaskPriority] = useState<TaskPriority>('Medium');
+  const [taskProjectId, setTaskProjectId] = useState(activeProjectId || projects[0]?.id || 'proj-1');
+  const [taskAssigneeId, setTaskAssigneeId] = useState(
+    workspaceSettings?.autoAssignCreator ? userProfile.id || 'user-1' : members[0]?.id || 'user-1'
+  );
+  const [taskPriority, setTaskPriority] = useState<TaskPriority>(
+    workspaceSettings?.defaultTaskPriority || 'Medium'
+  );
   const [taskStatus, setTaskStatus] = useState<TaskStatus>('Todo');
   const [taskDueDate, setTaskDueDate] = useState(() => {
     const d = new Date();
@@ -68,7 +70,7 @@ export const QuickCreateModal: React.FC = () => {
   // Document Form State
   const [docTitle, setDocTitle] = useState('');
   const [docType, setDocType] = useState<'Spec' | 'RFC' | 'Meeting Notes' | 'Design System' | 'Architecture'>('Spec');
-  const [docProjectId, setDocProjectId] = useState(projects[0]?.id || 'proj-1');
+  const [docProjectId, setDocProjectId] = useState(activeProjectId || projects[0]?.id || 'proj-1');
   const [docContent, setDocContent] = useState('');
 
   // Invite Form State
@@ -77,11 +79,55 @@ export const QuickCreateModal: React.FC = () => {
   const [inviteRole, setInviteRole] = useState('Software Engineer');
   const [inviteDepartment, setInviteDepartment] = useState('Engineering');
 
+  const prevOpenRef = useRef(false);
+
+  // Sync contextual defaults when modal transitions from closed to open
+  useEffect(() => {
+    if (isQuickCreateOpen && !prevOpenRef.current) {
+      setActiveTab(quickCreateDefaultTab);
+      // Contextual project preselection
+      const targetProjId = activeProjectId || projects[0]?.id || 'proj-1';
+      setTaskProjectId(targetProjId);
+      setDocProjectId(targetProjId);
+
+      // Workspace defaults
+      if (workspaceSettings?.defaultTaskPriority) {
+        setTaskPriority(workspaceSettings.defaultTaskPriority);
+      }
+      if (workspaceSettings?.autoAssignCreator) {
+        setTaskAssigneeId(userProfile.id || 'user-1');
+      }
+      if (workspaceSettings?.projectKeyPrefix) {
+        setProjectKey(`${workspaceSettings.projectKeyPrefix}-`);
+      }
+    }
+    prevOpenRef.current = isQuickCreateOpen;
+  }, [
+    isQuickCreateOpen,
+    quickCreateDefaultTab,
+    activeProjectId,
+    workspaceSettings?.defaultTaskPriority,
+    workspaceSettings?.autoAssignCreator,
+    workspaceSettings?.projectKeyPrefix,
+    userProfile.id,
+    projects,
+  ]);
+
   // Global key listener for 'C' to open quick create when not typing
   useEffect(() => {
+    if (!productivitySettings.keyboardShortcutsEnabled) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
-      if (e.key === 'c' && !e.metaKey && !e.ctrlKey && tag !== 'INPUT' && tag !== 'TEXTAREA' && !isQuickCreateOpen) {
+      if (
+        (e.key === 'c' || e.key === 'C') &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        tag !== 'INPUT' &&
+        tag !== 'TEXTAREA' &&
+        !(e.target as HTMLElement)?.isContentEditable &&
+        !isQuickCreateOpen
+      ) {
         e.preventDefault();
         setActiveTab('task');
         setIsQuickCreateOpen(true);
@@ -89,7 +135,7 @@ export const QuickCreateModal: React.FC = () => {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isQuickCreateOpen, setIsQuickCreateOpen]);
+  }, [productivitySettings.keyboardShortcutsEnabled, isQuickCreateOpen, setIsQuickCreateOpen]);
 
   const handleCreateTask = (e: React.FormEvent) => {
     e.preventDefault();
@@ -111,14 +157,28 @@ export const QuickCreateModal: React.FC = () => {
     setTaskTitle('');
     setTaskDescription('');
     setIsQuickCreateOpen(false);
-    setSelectedTaskId(newTask.id);
+
+    if (productivitySettings.quickCreateAutoOpen) {
+      setSelectedTaskId(newTask.id);
+    } else {
+      const projectMatch = projects.find((p) => p.id === newTask.projectId);
+      addToast({
+        type: 'info',
+        title: 'Task Created',
+        message: `${newTask.key} was added to ${projectMatch?.name || 'project'}.`,
+        action: {
+          label: 'View Task',
+          onClick: () => setSelectedTaskId(newTask.id),
+        },
+      });
+    }
   };
 
   const handleCreateProject = (e: React.FormEvent) => {
     e.preventDefault();
     if (!projectName.trim()) return;
 
-    createProject({
+    const newProject = createProject({
       name: projectName.trim(),
       key: projectKey.trim().toUpperCase() || projectName.slice(0, 3).toUpperCase(),
       description: projectDesc.trim(),
@@ -131,13 +191,15 @@ export const QuickCreateModal: React.FC = () => {
     setProjectKey('');
     setProjectDesc('');
     setIsQuickCreateOpen(false);
+    // Discover immediately: navigate directly to the new project!
+    openProject(newProject.id);
   };
 
   const handleCreateDocument = (e: React.FormEvent) => {
     e.preventDefault();
     if (!docTitle.trim()) return;
 
-    createDocument({
+    const newDoc = createDocument({
       title: docTitle.trim(),
       type: docType,
       projectId: docProjectId,
@@ -147,6 +209,9 @@ export const QuickCreateModal: React.FC = () => {
     setDocTitle('');
     setDocContent('');
     setIsQuickCreateOpen(false);
+    // Discover immediately: open the document in documents view!
+    setSelectedDocId(newDoc.id);
+    setActiveView('documents');
   };
 
   const handleSendInvite = (e: React.FormEvent) => {
@@ -163,6 +228,8 @@ export const QuickCreateModal: React.FC = () => {
     setInviteEmail('');
     setInviteName('');
     setIsQuickCreateOpen(false);
+    // Discover immediately: navigate to team view to see the pending invite!
+    setActiveView('team');
   };
 
   return (
@@ -229,10 +296,11 @@ export const QuickCreateModal: React.FC = () => {
         {activeTab === 'task' && (
           <form onSubmit={handleCreateTask} className="space-y-3.5">
             <div>
-              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+              <label htmlFor="task-title-input" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                 Task Title *
               </label>
               <input
+                id="task-title-input"
                 type="text"
                 required
                 value={taskTitle}
@@ -244,10 +312,11 @@ export const QuickCreateModal: React.FC = () => {
 
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                <label htmlFor="task-project-select" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                   Project
                 </label>
                 <select
+                  id="task-project-select"
                   value={taskProjectId}
                   onChange={(e) => setTaskProjectId(e.target.value)}
                   className="w-full px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-800 dark:text-slate-200 focus:border-brand-500 outline-hidden"
@@ -261,10 +330,11 @@ export const QuickCreateModal: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                <label htmlFor="task-assignee-select" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                   Assignee
                 </label>
                 <select
+                  id="task-assignee-select"
                   value={taskAssigneeId}
                   onChange={(e) => setTaskAssigneeId(e.target.value)}
                   className="w-full px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-800 dark:text-slate-200 focus:border-brand-500 outline-hidden"
@@ -280,10 +350,11 @@ export const QuickCreateModal: React.FC = () => {
 
             <div className="grid grid-cols-3 gap-3">
               <div>
-                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                <label htmlFor="task-priority-select" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                   Priority
                 </label>
                 <select
+                  id="task-priority-select"
                   value={taskPriority}
                   onChange={(e) => setTaskPriority(e.target.value as TaskPriority)}
                   className="w-full px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-800 dark:text-slate-200 focus:border-brand-500 outline-hidden"

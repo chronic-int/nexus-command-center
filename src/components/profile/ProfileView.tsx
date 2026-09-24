@@ -15,6 +15,7 @@ import {
   CheckSquare,
   Activity,
   ArrowRight,
+  ArrowLeft,
   AlertTriangle,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
@@ -32,6 +33,10 @@ export const ProfileView: React.FC = () => {
     setSelectedTaskId,
     setActiveProjectId,
     setActiveView,
+    openProject,
+    openProjectsDirectory,
+    previousView,
+    returnToPreviousView,
     addToast,
   } = useApp();
 
@@ -258,6 +263,20 @@ export const ProfileView: React.FC = () => {
 
   return (
     <div className="flex-1 overflow-y-auto p-5 sm:p-7 space-y-6 bg-slate-50/50 dark:bg-[#0b0f19]">
+      {/* Return to previous view affordance if arrived from elsewhere */}
+      {previousView && previousView !== 'profile' && (
+        <div className="flex items-center">
+          <button
+            type="button"
+            onClick={returnToPreviousView}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white bg-white dark:bg-[#121826] border border-slate-200 dark:border-slate-800 shadow-2xs hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            <span>Return to {previousView.charAt(0).toUpperCase() + previousView.slice(1).replace('-', ' ')}</span>
+          </button>
+        </div>
+      )}
+
       {/* Hidden File Input for Avatar */}
       <input
         ref={fileInputRef}
@@ -781,8 +800,7 @@ export const ProfileView: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => {
-                    setActiveProjectId(null);
-                    setActiveView('projects');
+                    openProjectsDirectory();
                   }}
                   className="text-xs text-brand-600 dark:text-brand-400 hover:underline flex items-center gap-1"
                 >
@@ -801,8 +819,7 @@ export const ProfileView: React.FC = () => {
                     <div
                       key={p.id}
                       onClick={() => {
-                        setActiveProjectId(p.id);
-                        setActiveView('projects');
+                        openProject(p.id);
                       }}
                       className="p-3.5 rounded-xl bg-slate-50/60 dark:bg-slate-900/40 border border-slate-200/70 dark:border-slate-800/70 hover:border-brand-500/50 transition-all cursor-pointer text-xs"
                     >

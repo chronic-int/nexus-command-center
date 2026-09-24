@@ -41,8 +41,9 @@ export const AppShell: React.FC = () => {
     activeProjectId,
     setActiveView,
     setActiveProjectId,
-    setIsQuickCreateOpen,
-    setQuickCreateDefaultTab,
+    openProjectsDirectory,
+    isMobileSidebarOpen,
+    setIsMobileSidebarOpen,
     unreadNotificationsCount,
   } = useApp();
 
@@ -77,6 +78,15 @@ export const AppShell: React.FC = () => {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-white dark:bg-[#0b0f19] text-slate-900 dark:text-slate-100">
+      {/* Mobile Sidebar Backdrop */}
+      {isMobileSidebarOpen && (
+        <div
+          onClick={() => setIsMobileSidebarOpen(false)}
+          className="fixed inset-0 bg-slate-950/60 z-30 sm:hidden backdrop-blur-xs transition-opacity animate-fade-in"
+          aria-hidden="true"
+        />
+      )}
+
       {/* Left Collapsible Sidebar */}
       <Sidebar />
 
@@ -109,8 +119,12 @@ export const AppShell: React.FC = () => {
                 key={item.id}
                 type="button"
                 onClick={() => {
-                  setActiveView(item.id);
-                  if (item.id !== 'projects') setActiveProjectId(null);
+                  if (item.id === 'projects') {
+                    openProjectsDirectory();
+                  } else {
+                    setActiveView(item.id);
+                    setActiveProjectId(null);
+                  }
                 }}
                 className={`relative flex flex-col items-center justify-center p-1 rounded-lg text-[10px] font-medium transition-colors ${
                   isActive ? 'text-brand-600 dark:text-brand-400' : 'text-slate-500'

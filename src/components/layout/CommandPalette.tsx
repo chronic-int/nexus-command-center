@@ -41,6 +41,8 @@ export const CommandPalette: React.FC = () => {
     setIsCommandPaletteOpen,
     setActiveView,
     setActiveProjectId,
+    openProject,
+    openProjectsDirectory,
     setIsQuickCreateOpen,
     setQuickCreateDefaultTab,
     setIsNotificationDrawerOpen,
@@ -53,6 +55,7 @@ export const CommandPalette: React.FC = () => {
     setDensity,
     resetDemoData,
     projects,
+    productivitySettings,
   } = useApp();
 
   const [query, setQuery] = useState('');
@@ -62,6 +65,7 @@ export const CommandPalette: React.FC = () => {
   // Global Keyboard Listener for ⌘K and /
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (!productivitySettings.keyboardShortcutsEnabled) return;
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault();
         setIsCommandPaletteOpen(!isCommandPaletteOpen);
@@ -73,7 +77,7 @@ export const CommandPalette: React.FC = () => {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isCommandPaletteOpen, setIsCommandPaletteOpen]);
+  }, [isCommandPaletteOpen, setIsCommandPaletteOpen, productivitySettings.keyboardShortcutsEnabled]);
 
   // Focus input on open
   useEffect(() => {
@@ -146,8 +150,7 @@ export const CommandPalette: React.FC = () => {
       category: 'Navigation',
       icon: FolderKanban,
       action: () => {
-        setActiveView('projects');
-        setActiveProjectId(null);
+        openProjectsDirectory();
       },
     },
     {
@@ -305,8 +308,7 @@ export const CommandPalette: React.FC = () => {
       category: 'Quick Access',
       icon: FolderKanban,
       action: () => {
-        setActiveProjectId(proj.id);
-        setActiveView('projects');
+        openProject(proj.id);
       },
     });
   });

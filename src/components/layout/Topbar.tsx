@@ -15,6 +15,7 @@ import {
   CheckSquare,
   FolderKanban,
   User as UserIcon,
+  Menu,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { Avatar } from '../common/Avatar';
@@ -39,6 +40,11 @@ export const Topbar: React.FC = () => {
     setDensity,
     setActiveView,
     setActiveProjectId,
+    openProject,
+    openProjectsDirectory,
+    isMobileSidebarOpen,
+    setIsMobileSidebarOpen,
+    productivitySettings,
     setSelectedTaskId,
     setSelectedDocId,
     setSelectedMemberId,
@@ -139,8 +145,7 @@ export const Topbar: React.FC = () => {
           <button
             type="button"
             onClick={() => {
-              setActiveView('projects');
-              setActiveProjectId(null);
+              openProjectsDirectory();
             }}
             className="hover:text-slate-800 dark:hover:text-slate-200 transition-colors"
           >
@@ -181,8 +186,19 @@ export const Topbar: React.FC = () => {
 
   return (
     <header className="h-14 border-b border-slate-200 dark:border-slate-800/80 bg-white/80 dark:bg-[#0b0f19]/90 backdrop-blur-md px-4 flex items-center justify-between gap-4 shrink-0 z-20">
-      {/* Breadcrumbs */}
-      <div className="flex items-center min-w-0">{getBreadcrumbs()}</div>
+      {/* Breadcrumbs with Mobile Drawer Toggle */}
+      <div className="flex items-center gap-2 min-w-0">
+        <button
+          type="button"
+          onClick={() => setIsMobileSidebarOpen(!isMobileSidebarOpen)}
+          className="sm:hidden p-1.5 -ml-1 rounded-lg text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+          title="Toggle Navigation Menu"
+          aria-label="Toggle Navigation Menu"
+        >
+          <Menu className="w-4 h-4" />
+        </button>
+        {getBreadcrumbs()}
+      </div>
 
       {/* Global Search & Command Trigger */}
       <div ref={searchContainerRef} className="relative flex-1 max-w-md hidden sm:block">
@@ -193,7 +209,11 @@ export const Topbar: React.FC = () => {
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             onFocus={() => setSearchFocused(true)}
-            placeholder="Search projects, tasks, people, docs... (or Press /)"
+            placeholder={
+              productivitySettings.keyboardShortcutsEnabled
+                ? "Search projects, tasks, people, docs... (or Press /)"
+                : "Search projects, tasks, people, docs..."
+            }
             className="w-full pl-9 pr-20 py-1.5 text-xs bg-slate-100 dark:bg-[#121826] border border-slate-200 dark:border-slate-800 rounded-lg text-slate-800 dark:text-slate-200 placeholder-slate-400 focus:bg-white dark:focus:bg-[#151c2e] focus:border-brand-500/80 focus:ring-1 focus:ring-brand-500/30 transition-all outline-hidden"
           />
           {searchQuery ? (
@@ -204,7 +224,7 @@ export const Topbar: React.FC = () => {
             >
               <X className="w-3.5 h-3.5" />
             </button>
-          ) : (
+          ) : productivitySettings.keyboardShortcutsEnabled ? (
             <button
               type="button"
               onClick={() => setIsCommandPaletteOpen(true)}
@@ -213,7 +233,7 @@ export const Topbar: React.FC = () => {
             >
               <Command className="w-2.5 h-2.5" />K
             </button>
-          )}
+          ) : null}
         </div>
 
         {/* Live Search Results Dropdown */}
@@ -235,8 +255,7 @@ export const Topbar: React.FC = () => {
                       <div
                         key={p.id}
                         onClick={() => {
-                          setActiveProjectId(p.id);
-                          setActiveView('projects');
+                          openProject(p.id);
                           setSearchFocused(false);
                           setSearchQuery('');
                         }}
@@ -258,25 +277,37 @@ export const Topbar: React.FC = () => {
                     <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2 py-1 flex items-center gap-1.5">
                       <CheckSquare className="w-3 h-3" /> Tasks
                     </div>
-                    {searchResults.tasks.slice(0, 5).map((t) => (
-                      <div
-                        key={t.id}
-                        onClick={() => {
-                          setSelectedTaskId(t.id);
-                          setSearchFocused(false);
-                          setSearchQuery('');
-                        }}
-                        className="px-2.5 py-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800/70 cursor-pointer flex items-center justify-between text-xs"
-                      >
-                        <div className="flex items-center gap-2 min-w-0 pr-2">
-                          <span className="text-[10px] font-mono px-1 py-0.2 rounded bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400 shrink-0">
-                            {t.key}
+                    {searchResults.tasks.slice(0, 5).map((t) => {
+                      const proj = projects.find((p) => p.id === t.projectId);
+                      return (
+                        <div
+                          key={t.id}
+                          onClick={() => {
+                            setSelectedTaskId(t.id);
+                            setSearchFocused(false);
+                            setSearchQuery('');
+                          }}
+                          className="px-2.5 py-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800/70 cursor-pointer flex items-center justify-between text-xs"
+                        >
+                          <div className="flex flex-col min-w-0 pr-2">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span className="text-[10px] font-mono px-1 py-0.2 rounded bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400 shrink-0">
+                                {t.key}
+                              </span>
+                              <span className="text-slate-800 dark:text-slate-200 truncate font-medium">
+                                {t.title}
+                              </span>
+                            </div>
+                            <span className="text-[10px] text-slate-400 truncate mt-0.5">
+                              Task • {proj ? proj.name : 'Workspace'}
+                            </span>
+                          </div>
+                          <span className="text-[10px] text-slate-400 shrink-0 font-medium">
+                            {t.status}
                           </span>
-                          <span className="text-slate-800 dark:text-slate-200 truncate">{t.title}</span>
                         </div>
-                        <span className="text-[10px] text-slate-400 shrink-0">{t.status}</span>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
 
@@ -290,6 +321,7 @@ export const Topbar: React.FC = () => {
                       <div
                         key={m.id}
                         onClick={() => {
+                          setActiveView('team');
                           setSelectedMemberId(m.id);
                           setSearchFocused(false);
                           setSearchQuery('');
@@ -312,21 +344,33 @@ export const Topbar: React.FC = () => {
                     <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2 py-1 flex items-center gap-1.5">
                       <FileText className="w-3 h-3" /> Documents
                     </div>
-                    {searchResults.documents.map((d) => (
-                      <div
-                        key={d.id}
-                        onClick={() => {
-                          setSelectedDocId(d.id);
-                          setActiveView('documents');
-                          setSearchFocused(false);
-                          setSearchQuery('');
-                        }}
-                        className="px-2.5 py-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800/70 cursor-pointer flex items-center justify-between text-xs"
-                      >
-                        <span className="font-medium text-slate-800 dark:text-slate-200 truncate">{d.title}</span>
-                        <span className="text-[10px] text-slate-400">{d.type}</span>
-                      </div>
-                    ))}
+                    {searchResults.documents.map((d) => {
+                      const docProj = projects.find((p) => p.id === d.projectId);
+                      return (
+                        <div
+                          key={d.id}
+                          onClick={() => {
+                            setSelectedDocId(d.id);
+                            setActiveView('documents');
+                            setSearchFocused(false);
+                            setSearchQuery('');
+                          }}
+                          className="px-2.5 py-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800/70 cursor-pointer flex items-center justify-between text-xs"
+                        >
+                          <div className="flex flex-col min-w-0 pr-2">
+                            <span className="font-medium text-slate-800 dark:text-slate-200 truncate">
+                              {d.title}
+                            </span>
+                            <span className="text-[10px] text-slate-400 truncate mt-0.5">
+                              Document • {docProj ? docProj.name : d.type}
+                            </span>
+                          </div>
+                          <span className="text-[10px] text-slate-400 shrink-0 font-mono">
+                            {d.type}
+                          </span>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>

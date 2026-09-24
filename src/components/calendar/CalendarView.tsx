@@ -18,6 +18,8 @@ export const CalendarView: React.FC = () => {
     setSelectedTaskId,
     setIsQuickCreateOpen,
     setQuickCreateDefaultTab,
+    productivitySettings,
+    workspaceSettings,
   } = useApp();
 
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -25,6 +27,9 @@ export const CalendarView: React.FC = () => {
 
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
+
+  const startOfWeek = productivitySettings?.startOfWeek || 'monday';
+  const workingDays = workspaceSettings?.workingDays || ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 
   // Navigation handlers
   const prevPeriod = () => {
@@ -53,7 +58,8 @@ export const CalendarView: React.FC = () => {
 
   // Month days generation
   const monthDays = useMemo(() => {
-    const firstDayIndex = new Date(year, month, 1).getDay();
+    const rawFirstDayIndex = new Date(year, month, 1).getDay();
+    const firstDayIndex = startOfWeek === 'monday' ? (rawFirstDayIndex + 6) % 7 : rawFirstDayIndex;
     const totalDaysInMonth = new Date(year, month + 1, 0).getDate();
     const prevMonthDays = new Date(year, month, 0).getDate();
 
@@ -62,6 +68,7 @@ export const CalendarView: React.FC = () => {
       dayNumber: number;
       isCurrentMonth: boolean;
       isToday: boolean;
+      isWorkingDay: boolean;
     }[] = [];
 
     // Preceding month padding
@@ -70,22 +77,28 @@ export const CalendarView: React.FC = () => {
       const m = month === 0 ? 12 : month;
       const y = month === 0 ? year - 1 : year;
       const dateStr = `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      const dayDate = new Date(y, m - 1, d);
+      const dayFullName = dayDate.toLocaleDateString('en-US', { weekday: 'long' });
       days.push({
         dateStr,
         dayNumber: d,
         isCurrentMonth: false,
         isToday: isTodayDate(dateStr),
+        isWorkingDay: workingDays.includes(dayFullName),
       });
     }
 
     // Current month days
     for (let d = 1; d <= totalDaysInMonth; d++) {
       const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      const dayDate = new Date(year, month, d);
+      const dayFullName = dayDate.toLocaleDateString('en-US', { weekday: 'long' });
       days.push({
         dateStr,
         dayNumber: d,
         isCurrentMonth: true,
         isToday: isTodayDate(dateStr),
+        isWorkingDay: workingDays.includes(dayFullName),
       });
     }
 
@@ -95,16 +108,19 @@ export const CalendarView: React.FC = () => {
       const m = month === 11 ? 1 : month + 2;
       const y = month === 11 ? year + 1 : year;
       const dateStr = `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      const dayDate = new Date(y, m - 1, d);
+      const dayFullName = dayDate.toLocaleDateString('en-US', { weekday: 'long' });
       days.push({
         dateStr,
         dayNumber: d,
         isCurrentMonth: false,
         isToday: isTodayDate(dateStr),
+        isWorkingDay: workingDays.includes(dayFullName),
       });
     }
 
     return days;
-  }, [year, month]);
+  }, [year, month, startOfWeek, workingDays]);
 
   const monthName = currentDate.toLocaleDateString('en-US', {
     month: 'long',
@@ -114,29 +130,33 @@ export const CalendarView: React.FC = () => {
   // Week days generation
   const weekDays = useMemo(() => {
     const currentDayOfWeek = currentDate.getDay();
-    const sunday = new Date(currentDate);
-    sunday.setDate(currentDate.getDate() - currentDayOfWeek);
+    const offset = startOfWeek === 'monday' ? (currentDayOfWeek + 6) % 7 : currentDayOfWeek;
+    const startPeriod = new Date(currentDate);
+    startPeriod.setDate(currentDate.getDate() - offset);
 
     const days: {
       dateStr: string;
       dayNumber: number;
       dayName: string;
       isToday: boolean;
+      isWorkingDay: boolean;
     }[] = [];
 
     for (let i = 0; i < 7; i++) {
-      const d = new Date(sunday);
-      d.setDate(sunday.getDate() + i);
-      const dateStr = d.toISOString().split('T')[0];
+      const d = new Date(startPeriod);
+      d.setDate(startPeriod.getDate() + i);
+      const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const dayFullName = d.toLocaleDateString('en-US', { weekday: 'long' });
       days.push({
         dateStr,
         dayNumber: d.getDate(),
         dayName: d.toLocaleDateString('en-US', { weekday: 'short' }),
         isToday: isTodayDate(dateStr),
+        isWorkingDay: workingDays.includes(dayFullName),
       });
     }
     return days;
-  }, [currentDate]);
+  }, [currentDate, startOfWeek, workingDays]);
 
   return (
     <div className="flex-1 flex flex-col min-h-0 bg-slate-50/50 dark:bg-[#0b0f19] p-5 space-y-4">
@@ -229,13 +249,12 @@ export const CalendarView: React.FC = () => {
         <div className="flex-1 flex flex-col min-h-0 bg-white dark:bg-[#111726] border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden shadow-xs">
           {/* Weekday headers */}
           <div className="grid grid-cols-7 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0e1320] text-center text-[11px] font-bold uppercase tracking-wider text-slate-400 py-2.5">
-            <div>Sun</div>
-            <div>Mon</div>
-            <div>Tue</div>
-            <div>Wed</div>
-            <div>Thu</div>
-            <div>Fri</div>
-            <div>Sat</div>
+            {(startOfWeek === 'monday'
+              ? ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+              : ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+            ).map((dayName) => (
+              <div key={dayName}>{dayName}</div>
+            ))}
           </div>
 
           {/* Days Grid */}
@@ -248,7 +267,9 @@ export const CalendarView: React.FC = () => {
                   key={day.dateStr}
                   className={`p-1.5 min-h-[95px] flex flex-col justify-between transition-colors ${
                     day.isCurrentMonth
-                      ? 'bg-transparent'
+                      ? day.isWorkingDay
+                        ? 'bg-transparent'
+                        : 'bg-slate-50/60 dark:bg-slate-900/40'
                       : 'bg-slate-50/40 dark:bg-slate-900/30 opacity-40'
                   } ${day.isToday ? 'bg-brand-500/5 dark:bg-brand-500/10' : ''}`}
                 >
@@ -304,6 +325,8 @@ export const CalendarView: React.FC = () => {
                 <div
                   key={day.dateStr}
                   className={`flex flex-col p-3 ${
+                    !day.isWorkingDay ? 'bg-slate-50/60 dark:bg-slate-900/40' : ''
+                  } ${
                     day.isToday ? 'bg-brand-500/5 dark:bg-brand-500/10' : ''
                   }`}
                 >

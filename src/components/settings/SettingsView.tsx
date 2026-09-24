@@ -1,4 +1,4 @@
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef, useMemo, useEffect } from 'react';
 import {
   Settings,
   User,
@@ -17,6 +17,7 @@ import {
   Search,
   CheckSquare,
   AlertCircle,
+  ArrowLeft,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { Avatar } from '../common/Avatar';
@@ -124,6 +125,8 @@ export const SettingsView: React.FC = () => {
     documents,
     automations,
     activities,
+    previousView,
+    returnToPreviousView,
     setActiveView,
     setIsShortcutsModalOpen,
     addToast,
@@ -150,6 +153,22 @@ export const SettingsView: React.FC = () => {
         t.keywords.some((k) => k.toLowerCase().includes(q))
     );
   }, [searchQuery]);
+
+  // Automatically switch tab when search matches a different category
+  useEffect(() => {
+    if (searchQuery.trim() && filteredTabs.length > 0) {
+      if (!filteredTabs.some((t) => t.id === settingsTab)) {
+        setSettingsTab(filteredTabs[0].id);
+      }
+    }
+  }, [searchQuery, filteredTabs, settingsTab, setSettingsTab]);
+
+  // Helper to check if a setting section matches search query
+  const isMatch = (terms: string[]) => {
+    if (!searchQuery.trim()) return false;
+    const q = searchQuery.toLowerCase().trim();
+    return terms.some((t) => t.toLowerCase().includes(q));
+  };
 
   // Approximate storage footprint in KB
   const storageFootprintKB = useMemo(() => {
@@ -245,6 +264,20 @@ export const SettingsView: React.FC = () => {
 
   return (
     <div className="flex-1 overflow-y-auto p-5 sm:p-7 space-y-6 bg-slate-50/50 dark:bg-[#0b0f19]">
+      {/* Return to previous view affordance if arrived from elsewhere */}
+      {previousView && previousView !== 'settings' && (
+        <div className="flex items-center">
+          <button
+            type="button"
+            onClick={returnToPreviousView}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white bg-white dark:bg-[#121826] border border-slate-200 dark:border-slate-800 shadow-2xs hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            <span>Return to {previousView.charAt(0).toUpperCase() + previousView.slice(1).replace('-', ' ')}</span>
+          </button>
+        </div>
+      )}
+
       {/* Hidden File Input for Workspace Import */}
       <input
         ref={importFileInputRef}
@@ -512,7 +545,7 @@ export const SettingsView: React.FC = () => {
               </div>
 
               {/* Theme Mode Selector */}
-              <div>
+              <div className={`p-2 rounded-xl transition-all ${isMatch(['theme', 'dark', 'light', 'color', 'contrast']) ? 'ring-2 ring-brand-500/50 bg-brand-50/20 dark:bg-brand-500/5' : ''}`}>
                 <label className="block font-bold text-slate-900 dark:text-white mb-2">
                   Color Contrast & Theme
                 </label>
@@ -543,7 +576,7 @@ export const SettingsView: React.FC = () => {
               </div>
 
               {/* Density Mode Selector */}
-              <div className="pt-4 border-t border-slate-100 dark:border-slate-800">
+              <div className={`pt-4 border-t border-slate-100 dark:border-slate-800 p-2 rounded-xl transition-all ${isMatch(['density', 'compact', 'comfortable', 'padding']) ? 'ring-2 ring-brand-500/50 bg-brand-50/20 dark:bg-brand-500/5' : ''}`}>
                 <label className="block font-bold text-slate-900 dark:text-white mb-2">
                   Information Density
                 </label>
@@ -570,7 +603,7 @@ export const SettingsView: React.FC = () => {
               </div>
 
               {/* Reduced Motion Setting */}
-              <div className="pt-4 border-t border-slate-100 dark:border-slate-800">
+              <div className={`pt-4 border-t border-slate-100 dark:border-slate-800 p-2 rounded-xl transition-all ${isMatch(['motion', 'animation', 'reduced motion']) ? 'ring-2 ring-brand-500/50 bg-brand-50/20 dark:bg-brand-500/5' : ''}`}>
                 <label className="block font-bold text-slate-900 dark:text-white mb-2">
                   Motion & Animation
                 </label>
@@ -598,7 +631,7 @@ export const SettingsView: React.FC = () => {
               </div>
 
               {/* Sidebar Default Behavior */}
-              <div className="pt-4 border-t border-slate-100 dark:border-slate-800">
+              <div className={`pt-4 border-t border-slate-100 dark:border-slate-800 p-2 rounded-xl transition-all ${isMatch(['sidebar', 'collapse']) ? 'ring-2 ring-brand-500/50 bg-brand-50/20 dark:bg-brand-500/5' : ''}`}>
                 <label className="flex items-center justify-between p-3.5 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 cursor-pointer">
                   <div>
                     <p className="font-bold text-slate-900 dark:text-white">Collapse Sidebar by Default</p>
@@ -845,7 +878,7 @@ export const SettingsView: React.FC = () => {
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
+                <div className={`transition-all rounded-xl ${isMatch(['landing', 'default view', 'overview', 'page']) ? 'ring-2 ring-brand-500/50 bg-brand-50/20 dark:bg-brand-500/5 p-2' : ''}`}>
                   <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
                     Default Landing View
                   </label>
@@ -864,7 +897,7 @@ export const SettingsView: React.FC = () => {
                   </select>
                 </div>
 
-                <div>
+                <div className={`transition-all rounded-xl ${isMatch(['project view', 'board', 'list', 'timeline', 'tab']) ? 'ring-2 ring-brand-500/50 bg-brand-50/20 dark:bg-brand-500/5 p-2' : ''}`}>
                   <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
                     Default Project Tab
                   </label>
@@ -884,7 +917,7 @@ export const SettingsView: React.FC = () => {
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
+                <div className={`transition-all rounded-xl ${isMatch(['start of week', 'monday', 'sunday', 'calendar', 'week']) ? 'ring-2 ring-brand-500/50 bg-brand-50/20 dark:bg-brand-500/5 p-2' : ''}`}>
                   <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
                     Start of Week
                   </label>
@@ -902,7 +935,7 @@ export const SettingsView: React.FC = () => {
                   </select>
                 </div>
 
-                <div>
+                <div className={`transition-all rounded-xl ${isMatch(['quick create', 'auto-open', 'drawer']) ? 'ring-2 ring-brand-500/50 bg-brand-50/20 dark:bg-brand-500/5 p-2' : ''}`}>
                   <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
                     Quick Create Action
                   </label>
@@ -922,7 +955,7 @@ export const SettingsView: React.FC = () => {
               </div>
 
               <div className="pt-2">
-                <label className="flex items-center justify-between p-3.5 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 cursor-pointer">
+                <label className={`flex items-center justify-between p-3.5 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 cursor-pointer transition-all ${isMatch(['shortcuts', 'hotkeys', 'keyboard', 'ctrl', 'cmd', 'command']) ? 'ring-2 ring-brand-500/50 bg-brand-50/20 dark:bg-brand-500/5' : ''}`}>
                   <div>
                     <p className="font-bold text-slate-900 dark:text-white">Enable Global Keyboard Shortcuts</p>
                     <p className="text-[11px] text-slate-400 mt-0.5">

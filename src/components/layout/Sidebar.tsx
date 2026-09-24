@@ -17,6 +17,7 @@ import {
   Plus,
   Sparkles,
   Command,
+  X,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 
@@ -27,6 +28,10 @@ export const Sidebar: React.FC = () => {
     workspaceSettings,
     activeProjectId,
     setActiveProjectId,
+    openProject,
+    openProjectsDirectory,
+    isMobileSidebarOpen,
+    setIsMobileSidebarOpen,
     projects,
     tasks,
     unreadNotificationsCount,
@@ -67,22 +72,25 @@ export const Sidebar: React.FC = () => {
   ];
 
   const handleNavClick = (viewId: string) => {
-    setActiveView(viewId);
-    if (viewId !== 'projects') {
+    if (viewId === 'projects') {
+      openProjectsDirectory();
+    } else {
+      setActiveView(viewId);
       setActiveProjectId(null);
     }
+    setIsMobileSidebarOpen(false);
   };
 
   const handleProjectClick = (projectId: string) => {
-    setActiveProjectId(projectId);
-    setActiveView('projects');
+    openProject(projectId);
+    setIsMobileSidebarOpen(false);
   };
 
   return (
     <aside
-      className={`relative flex flex-col border-r border-slate-200 dark:border-slate-800/80 bg-slate-50/70 dark:bg-[#0b0f19] transition-all duration-300 ease-in-out shrink-0 select-none z-30 ${
-        sidebarCollapsed ? 'w-16' : 'w-64'
-      }`}
+      className={`fixed sm:relative inset-y-0 left-0 flex flex-col border-r border-slate-200 dark:border-slate-800/80 bg-slate-50 dark:bg-[#0b0f19] transition-all duration-300 ease-in-out shrink-0 select-none z-40 ${
+        isMobileSidebarOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full sm:translate-x-0'
+      } ${sidebarCollapsed ? 'w-64 sm:w-16' : 'w-64'}`}
     >
       {/* Brand & Workspace Switcher */}
       <div className="p-3 border-b border-slate-200 dark:border-slate-800/80">
@@ -94,7 +102,7 @@ export const Sidebar: React.FC = () => {
             <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-brand-600 to-indigo-500 flex items-center justify-center text-white shadow-md shadow-brand-500/20 group-hover:scale-105 transition-transform shrink-0">
               <Sparkles className="w-4 h-4" />
             </div>
-            {!sidebarCollapsed && (
+            {(!sidebarCollapsed || isMobileSidebarOpen) && (
               <div className="flex flex-col">
                 <span className="text-sm font-bold tracking-tight text-slate-900 dark:text-white flex items-center gap-1.5">
                   NEXUS
@@ -107,16 +115,28 @@ export const Sidebar: React.FC = () => {
             )}
           </div>
 
-          {!sidebarCollapsed && (
+          <div className="flex items-center gap-1">
+            {/* Mobile close button */}
             <button
               type="button"
-              onClick={() => setSidebarCollapsed(true)}
-              className="p-1 rounded-md text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-200/60 dark:hover:bg-slate-800 transition-colors"
-              title="Collapse sidebar"
+              onClick={() => setIsMobileSidebarOpen(false)}
+              className="sm:hidden p-1.5 rounded-md text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-200/60 dark:hover:bg-slate-800 transition-colors"
+              title="Close menu"
             >
-              <ChevronLeft className="w-4 h-4" />
+              <X className="w-4 h-4" />
             </button>
-          )}
+
+            {!sidebarCollapsed && (
+              <button
+                type="button"
+                onClick={() => setSidebarCollapsed(true)}
+                className="hidden sm:inline-flex p-1 rounded-md text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-200/60 dark:hover:bg-slate-800 transition-colors"
+                title="Collapse sidebar"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Workspace Dropdown */}
@@ -180,6 +200,7 @@ export const Sidebar: React.FC = () => {
               return (
                 <button
                   key={item.id}
+                  data-testid={`nav-${item.id}`}
                   type="button"
                   onClick={() => handleNavClick(item.id)}
                   title={sidebarCollapsed ? item.label : undefined}

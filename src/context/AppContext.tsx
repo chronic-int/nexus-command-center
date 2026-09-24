@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import confetti from 'canvas-confetti';
-import {
+import type {
   Task,
   Project,
   TeamMember,
@@ -99,6 +99,16 @@ interface AppContextType {
   setSelectedMemberId: (id: string | null) => void;
   selectedDocId: string | null;
   setSelectedDocId: (id: string | null) => void;
+
+  // Coherent Navigation & Context Preservation
+  openProject: (projectId: string, tab?: ViewTab) => void;
+  openProjectsDirectory: () => void;
+  lastActiveProjectId: string | null;
+  previousView: string | null;
+  returnToPreviousView: () => void;
+  isMobileSidebarOpen: boolean;
+  setIsMobileSidebarOpen: (open: boolean) => void;
+  dispatchBrowserNotification: (title: string, options?: NotificationOptions) => void;
 
   // Overlays
   isCommandPaletteOpen: boolean;
@@ -360,12 +370,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Settings active tab
   const [settingsTab, setSettingsTab] = useState<string>('profile');
 
-  // Navigation state
-  const [activeView, setActiveView] = useState<string>(() => {
+  // Navigation & context preservation state
+  const [activeView, setActiveViewState] = useState<string>(() => {
     const prod = getStoredItem(STORAGE_KEYS.PRODUCTIVITY_SETTINGS, DEFAULT_PRODUCTIVITY_SETTINGS);
     return prod.defaultLandingPage || 'overview';
   });
+  const [previousView, setPreviousView] = useState<string | null>(null);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [lastActiveProjectId, setLastActiveProjectId] = useState<string | null>(null);
   const [projectTab, setProjectTab] = useState<ViewTab>(() => {
     const prod = getStoredItem(STORAGE_KEYS.PRODUCTIVITY_SETTINGS, DEFAULT_PRODUCTIVITY_SETTINGS);
     return prod.defaultProjectTab || 'Board';
@@ -373,6 +385,76 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [selectedMemberId, setSelectedMemberId] = useState<string | null>(null);
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState<boolean>(false);
+
+  // Wrapped setActiveView with context tracking
+  const setActiveView = useCallback((newView: string) => {
+    setActiveViewState((current) => {
+      if (current !== newView) {
+        setPreviousView(current);
+      }
+      return newView;
+    });
+  }, []);
+
+  // Coherent project opener
+  const openProject = useCallback(
+    (projectId: string, tab?: ViewTab) => {
+      setActiveProjectId(projectId);
+      setLastActiveProjectId(projectId);
+      setActiveViewState((current) => {
+        if (current !== 'projects') {
+          setPreviousView(current);
+        }
+        return 'projects';
+      });
+      setProjectTab(tab || productivitySettings.defaultProjectTab || 'Board');
+    },
+    [productivitySettings.defaultProjectTab]
+  );
+
+  // Coherent projects directory opener
+  const openProjectsDirectory = useCallback(() => {
+    setActiveProjectId(null);
+    setActiveViewState((current) => {
+      if (current !== 'projects') {
+        setPreviousView(current);
+      }
+      return 'projects';
+    });
+  }, []);
+
+  // Return to previous view
+  const returnToPreviousView = useCallback(() => {
+    if (previousView) {
+      setActiveViewState(previousView);
+      if (previousView === 'projects' && lastActiveProjectId) {
+        setActiveProjectId(lastActiveProjectId);
+      }
+    } else {
+      setActiveViewState(productivitySettings.defaultLandingPage || 'overview');
+    }
+  }, [previousView, lastActiveProjectId, productivitySettings.defaultLandingPage]);
+
+  // Browser notification dispatcher
+  const dispatchBrowserNotification = useCallback(
+    (title: string, options?: NotificationOptions) => {
+      if (!notificationPreferences.browserNotifications) return;
+      if (typeof window === 'undefined' || !('Notification' in window)) return;
+      if (Notification.permission !== 'granted') return;
+      if (document.visibilityState === 'hidden') {
+        try {
+          new Notification(title, {
+            icon: '/favicon.ico',
+            ...options,
+          });
+        } catch {
+          // Ignore sandboxed errors
+        }
+      }
+    },
+    [notificationPreferences.browserNotifications]
+  );
 
   // Overlays
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState<boolean>(false);
@@ -975,13 +1057,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // ---------------------------------------------------------------------------
   const createTask = useCallback(
     (data: Partial<Task>): Task => {
+      const priority = data.priority || workspaceSettings.defaultTaskPriority || 'Medium';
+      const assigneeId =
+        data.assigneeId ||
+        (workspaceSettings.autoAssignCreator ? (userProfile.id || 'user-1') : undefined);
+
+      const payload: Partial<Task> = {
+        ...data,
+        priority,
+        ...(assigneeId ? { assigneeId } : {}),
+      };
+
       const newTask = executeTransaction(
         (state) => {
-          const { state: nextState, task } = createTaskOp(state, data);
+          const { state: nextState, task } = createTaskOp(state, payload);
           return { nextState, result: task, taskDeltas: [task] };
         },
         { mutationType: 'CREATE_TASK' }
       );
+
+      if (newTask.priority === 'Urgent') {
+        dispatchBrowserNotification(`Urgent Task: ${newTask.title}`, {
+          body: `High-priority item ${newTask.key} was added to the workspace.`,
+        });
+      }
 
       addToast({
         type: 'success',
@@ -991,7 +1090,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       return newTask;
     },
-    [executeTransaction, addToast]
+    [executeTransaction, addToast, workspaceSettings, userProfile.id, dispatchBrowserNotification]
   );
 
   const updateTask = useCallback(
@@ -1306,13 +1405,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // ---------------------------------------------------------------------------
   const createProject = useCallback(
     (data: Partial<Project>): Project => {
+      let key = data.key?.trim();
+      if (!key && workspaceSettings.projectKeyPrefix) {
+        const base = (data.name?.trim() || 'PRJ').slice(0, 3).toUpperCase();
+        key = `${workspaceSettings.projectKeyPrefix.toUpperCase()}-${base}`;
+      }
+
+      const payload: Partial<Project> = {
+        ...data,
+        key: key || data.key,
+      };
+
       const newProject = executeTransaction(
         (state) => {
-          const { state: nextState, project } = createProjectOp(state, data);
+          const { state: nextState, project } = createProjectOp(state, payload);
           return { nextState, result: project, projectDeltas: [project] };
         },
         { mutationType: 'CREATE_PROJECT' }
       );
+
+      setLastActiveProjectId(newProject.id);
 
       addToast({
         type: 'success',
@@ -1322,7 +1434,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       return newProject;
     },
-    [executeTransaction, addToast]
+    [executeTransaction, addToast, workspaceSettings.projectKeyPrefix]
   );
 
   const updateProject = useCallback(
@@ -1575,8 +1687,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   );
 
   const unreadNotificationsCount = useMemo(() => {
-    return workspace.notifications.filter((n) => !n.read).length;
-  }, [workspace.notifications]);
+    if (!notificationPreferences.inAppNotifications) {
+      return 0;
+    }
+    return workspace.notifications.filter((n) => {
+      if (n.read) return false;
+      if (n.category) {
+        const cat = n.category.toLowerCase();
+        if (cat.includes('assign') && !notificationPreferences.categories.assignments) return false;
+        if (cat.includes('mention') && !notificationPreferences.categories.mentions) return false;
+        if (cat.includes('deadline') && !notificationPreferences.categories.deadlines) return false;
+        if (cat.includes('project') && !notificationPreferences.categories.projectUpdates) return false;
+        if ((cat.includes('system') || cat.includes('rule') || cat.includes('auto')) && !notificationPreferences.categories.automationEvents) return false;
+        if (cat.includes('activity') && !notificationPreferences.categories.workspaceActivity) return false;
+      }
+      return true;
+    }).length;
+  }, [workspace.notifications, notificationPreferences]);
 
   // ---------------------------------------------------------------------------
   // Automation Actions
@@ -1803,6 +1930,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setProductivitySettingsState(DEFAULT_PRODUCTIVITY_SETTINGS);
     setNotificationPreferencesState(DEFAULT_NOTIFICATION_PREFERENCES);
     setReducedMotionState('system');
+    setActiveViewState('overview');
+    setActiveProjectId(null);
+    setLastActiveProjectId(null);
+    setPreviousView(null);
+    setProjectTab('Board');
 
     addToast({
       type: 'success',
@@ -1827,6 +1959,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setActiveView,
       activeProjectId,
       setActiveProjectId,
+      openProject,
+      openProjectsDirectory,
+      lastActiveProjectId,
+      previousView,
+      returnToPreviousView,
+      isMobileSidebarOpen,
+      setIsMobileSidebarOpen,
+      dispatchBrowserNotification,
       projectTab,
       setProjectTab,
       selectedTaskId,
@@ -1928,7 +2068,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       persistenceStatus,
       insights,
       activeView,
+      setActiveView,
       activeProjectId,
+      openProject,
+      openProjectsDirectory,
+      lastActiveProjectId,
+      previousView,
+      returnToPreviousView,
+      isMobileSidebarOpen,
+      setIsMobileSidebarOpen,
+      dispatchBrowserNotification,
       projectTab,
       selectedTaskId,
       selectedMemberId,

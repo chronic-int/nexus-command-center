@@ -9,6 +9,7 @@ export const ShortcutsModal: React.FC = () => {
     setIsShortcutsModalOpen,
     setActiveView,
     setActiveProjectId,
+    openProjectsDirectory,
     setIsQuickCreateOpen,
     setQuickCreateDefaultTab,
     productivitySettings,
@@ -66,8 +67,7 @@ export const ShortcutsModal: React.FC = () => {
         const k = e.key.toLowerCase();
         if (k === 'p') {
           e.preventDefault();
-          setActiveProjectId(null);
-          setActiveView('projects');
+          openProjectsDirectory();
         } else if (k === 't') {
           e.preventDefault();
           setActiveProjectId(null);
